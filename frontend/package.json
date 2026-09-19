@@ -5,7 +5,7 @@
   "packageManager": "pnpm@11.19.0",
   "engines": {
     "node": ">=23.0.0"
-  }, 
+  },
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
@@ -15,6 +15,7 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@vinext/cloudflare": "1.0.0-beta.8",
     "drizzle-orm": "0.45.2",
     "react": "19.2.6",
     "react-dom": "19.2.6",
@@ -30,7 +31,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
+    "@vitejs/plugin-rsc": "0.5.34",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-plugin-jsx-a11y": "6.10.2",
@@ -41,7 +42,7 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
-    "vinext": "1.0.0-beta.2",
+    "vinext": "1.0.0-beta.10",
     "vite": "8.0.13",
     "wrangler": "4.92.0"
   },
