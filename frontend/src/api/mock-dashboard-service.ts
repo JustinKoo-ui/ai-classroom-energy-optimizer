@@ -1,0 +1,337 @@
+import type {
+  DashboardData,
+  DashboardDevice,
+  DashboardRealtimeEvent,
+  DashboardService,
+  DeviceControlRequest,
+  MockScenario,
+} from "@/src/types/dashboard";
+import type { UUID } from "@/src/types/contracts";
+
+const wait = (milliseconds: number) =>
+  new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+
+const makeId = (): UUID => crypto.randomUUID();
+const now = () => new Date().toISOString();
+
+function createInitialDashboard(): DashboardData {
+  const timestamp = now();
+  return {
+    classroom_id: "26e97d46-7a34-4439-922a-83684bda557d",
+    classroom_name: "Room A-204",
+    building_name: "Engineering Block",
+    connection: "connected",
+    last_updated_at: timestamp,
+    metrics: [
+      {
+        id: "occupancy",
+        label: "Occupancy",
+        value: 18,
+        display_value: "18",
+        unit: "people",
+        detail: "60% of room capacity",
+        trend: "steady",
+        trend_label: "Stable for 12 min",
+        status: "ok",
+        updated_at: timestamp,
+      },
+      {
+        id: "temperature",
+        label: "Temperature",
+        value: 25.8,
+        display_value: "25.8",
+        unit: "°C",
+        detail: "Comfort target 26°C",
+        trend: "down",
+        trend_label: "0.4°C cooler",
+        status: "ok",
+        updated_at: timestamp,
+      },
+      {
+        id: "humidity",
+        label: "Humidity",
+        value: 64,
+        display_value: "64",
+        unit: "%",
+        detail: "Within comfort range",
+        trend: "steady",
+        trend_label: "No change",
+        status: "ok",
+        updated_at: timestamp,
+      },
+      {
+        id: "ambient_light",
+        label: "Ambient light",
+        value: 268,
+        display_value: "268",
+        unit: "lux",
+        detail: "32 lux below target",
+        trend: "up",
+        trend_label: "Daylight increasing",
+        status: "ok",
+        updated_at: timestamp,
+      },
+      {
+        id: "current_power",
+        label: "Current power",
+        value: 2.84,
+        display_value: "2.84",
+        unit: "kW",
+        detail: "Across 3 active devices",
+        trend: "down",
+        trend_label: "8% below baseline",
+        status: "ok",
+        updated_at: timestamp,
+      },
+      {
+        id: "energy_today",
+        label: "Energy used today",
+        value: 19.6,
+        display_value: "19.6",
+        unit: "kWh",
+        detail: "Since 07:00",
+        trend: "up",
+        trend_label: "4.1 kWh this hour",
+        status: "ok",
+        updated_at: timestamp,
+      },
+      {
+        id: "energy_saved",
+        label: "Estimated energy saved",
+        value: 5.7,
+        display_value: "5.7",
+        unit: "kWh",
+        detail: "RM 2.92 estimated value",
+        trend: "up",
+        trend_label: "22.5% vs baseline",
+        status: "ok",
+        updated_at: timestamp,
+      },
+    ],
+    devices: [
+      {
+        id: "1b9f56b8-2c8a-40dd-87ae-b8e17357fb11",
+        name: "Air conditioner",
+        location: "North ceiling unit",
+        kind: "air_conditioner",
+        is_on: true,
+        mode: "auto",
+        connected: true,
+        pending: false,
+        target_temperature_c: 26,
+        fan_speed: null,
+        brightness_pct: null,
+        active_power_w: 2260,
+        status_label: "Cooling gently",
+        updated_at: timestamp,
+      },
+      {
+        id: "9e88b257-15d5-4362-a786-3260ab5947a0",
+        name: "Ceiling fans",
+        location: "4-zone array",
+        kind: "fan",
+        is_on: true,
+        mode: "auto",
+        connected: true,
+        pending: false,
+        target_temperature_c: null,
+        fan_speed: 2,
+        brightness_pct: null,
+        active_power_w: 290,
+        status_label: "Speed 2 · balanced",
+        updated_at: timestamp,
+      },
+      {
+        id: "68557d5f-6a3f-45f2-bdb6-d7798f19d5c8",
+        name: "Lighting",
+        location: "Window + aisle zones",
+        kind: "lighting",
+        is_on: true,
+        mode: "auto",
+        connected: true,
+        pending: false,
+        target_temperature_c: null,
+        fan_speed: null,
+        brightness_pct: 58,
+        active_power_w: 290,
+        status_label: "Daylight compensation",
+        updated_at: timestamp,
+      },
+    ],
+    ai: {
+      occupants_detected: 18,
+      departure_probability: 0.27,
+      predicted_occupancy_trend: "stable",
+      ai_control_state: "observing",
+      prediction_confidence: 0.91,
+      recommendation: "Maintain current comfort settings; departure is not yet likely.",
+      model_version: "leave-v1.2.0",
+      expires_at: new Date(Date.now() + 15_000).toISOString(),
+    },
+    charts: {
+      power_over_time: [
+        { label: "08:00", value: 1.2 },
+        { label: "09:00", value: 2.7 },
+        { label: "10:00", value: 3.1 },
+        { label: "11:00", value: 2.9 },
+        { label: "12:00", value: 1.5 },
+        { label: "13:00", value: 2.2 },
+        { label: "14:00", value: 2.84 },
+      ],
+      baseline_vs_ai: [
+        { label: "Mon", value: 29.2, secondary_value: 23.7 },
+        { label: "Tue", value: 31.4, secondary_value: 24.9 },
+        { label: "Wed", value: 28.8, secondary_value: 22.4 },
+        { label: "Thu", value: 33.1, secondary_value: 26.2 },
+        { label: "Fri", value: 25.3, secondary_value: 19.6 },
+      ],
+      daily_savings: [
+        { label: "Mon", value: 5.5 },
+        { label: "Tue", value: 6.5 },
+        { label: "Wed", value: 6.4 },
+        { label: "Thu", value: 6.9 },
+        { label: "Fri", value: 5.7 },
+      ],
+      energy_by_appliance: [
+        { label: "Air conditioning", value_kwh: 14.1, color: "#143c36" },
+        { label: "Fans", value_kwh: 2.2, color: "#7abf72" },
+        { label: "Lighting", value_kwh: 3.3, color: "#d8f06a" },
+      ],
+    },
+  };
+}
+
+export class MockDashboardService implements DashboardService {
+  private state = createInitialDashboard();
+  private listeners = new Set<(event: DashboardRealtimeEvent) => void>();
+  private timer: number | null = null;
+  private scenario: MockScenario = "live";
+
+  async getInitialState(): Promise<DashboardData> {
+    await wait(700);
+    return structuredClone(this.state);
+  }
+
+  subscribe(listener: (event: DashboardRealtimeEvent) => void): () => void {
+    this.listeners.add(listener);
+    if (this.timer === null) {
+      this.timer = window.setInterval(() => this.tick(), 2_500);
+    }
+    return () => {
+      this.listeners.delete(listener);
+      if (this.listeners.size === 0 && this.timer !== null) {
+        window.clearInterval(this.timer);
+        this.timer = null;
+      }
+    };
+  }
+
+  async requestDeviceControl(
+    request: DeviceControlRequest,
+  ): Promise<{ request_id: UUID }> {
+    const requestId = makeId();
+    const deviceIndex = this.state.devices.findIndex((device) => device.id === request.device_id);
+    if (deviceIndex < 0) throw new Error("Device not found");
+    if (!this.state.devices[deviceIndex].connected) throw new Error("Device is disconnected");
+
+    this.state.devices[deviceIndex] = {
+      ...this.state.devices[deviceIndex],
+      pending: true,
+      status_label: "Awaiting policy approval",
+      updated_at: now(),
+    };
+    this.emitDevice(this.state.devices[deviceIndex]);
+    await wait(650);
+
+    this.state.devices[deviceIndex] = {
+      ...this.state.devices[deviceIndex],
+      ...request.patch,
+      pending: false,
+      status_label: "Applied · policy approved",
+      updated_at: now(),
+    };
+    this.emitDevice(this.state.devices[deviceIndex]);
+    return { request_id: requestId };
+  }
+
+  setMockScenario(scenario: MockScenario): void {
+    this.scenario = scenario;
+    this.applyScenario();
+    this.emitSnapshot();
+  }
+
+  private tick(): void {
+    if (this.scenario === "connection_loss") {
+      this.applyScenario();
+      this.emitSnapshot();
+      return;
+    }
+    const timestamp = now();
+    const drift = Math.sin(Date.now() / 9_000);
+    const updateMetric = (id: string, value: number, display: string) => {
+      const metric = this.state.metrics.find((item) => item.id === id);
+      if (metric) Object.assign(metric, { value, display_value: display, updated_at: timestamp });
+    };
+    const power = Math.max(1.2, 2.78 + drift * 0.16);
+    const temperature = 25.8 + drift * 0.12;
+    const humidity = 64 + drift * 0.8;
+    updateMetric("current_power", power, power.toFixed(2));
+    updateMetric("temperature", temperature, temperature.toFixed(1));
+    updateMetric("humidity", humidity, Math.round(humidity).toString());
+    this.state.last_updated_at = timestamp;
+    this.state.ai.expires_at = new Date(Date.now() + 15_000).toISOString();
+    this.applyScenario();
+    this.emitSnapshot();
+  }
+
+  private applyScenario(): void {
+    this.state.connection = this.scenario === "connection_loss" ? "disconnected" : "connected";
+    const lightMetric = this.state.metrics.find((metric) => metric.id === "ambient_light");
+    if (lightMetric) {
+      lightMetric.status =
+        this.scenario === "sensor_error"
+          ? "error"
+          : this.scenario === "connection_loss"
+            ? "stale"
+            : "ok";
+      lightMetric.detail =
+        this.scenario === "sensor_error" ? "Lux sensor is not responding" : "32 lux below target";
+    }
+    const fan = this.state.devices.find((device) => device.kind === "fan");
+    if (fan) {
+      fan.connected = this.scenario !== "device_offline";
+      fan.status_label = fan.connected ? "Speed 2 · balanced" : "Controller disconnected";
+    }
+    if (this.scenario === "connection_loss") {
+      for (const metric of this.state.metrics) metric.status = "stale";
+    } else {
+      for (const metric of this.state.metrics) {
+        if (metric.id !== "ambient_light" || this.scenario !== "sensor_error") metric.status = "ok";
+      }
+    }
+  }
+
+  private emitSnapshot(): void {
+    this.emit({
+      schema_version: "1.0",
+      event_id: makeId(),
+      type: "snapshot.updated",
+      occurred_at: now(),
+      data: structuredClone(this.state),
+    });
+  }
+
+  private emitDevice(device: DashboardDevice): void {
+    this.emit({
+      schema_version: "1.0",
+      event_id: makeId(),
+      type: "device.state_updated",
+      occurred_at: now(),
+      data: structuredClone(device),
+    });
+  }
+
+  private emit(event: DashboardRealtimeEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
