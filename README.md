@@ -1,6 +1,6 @@
 # AI Classroom Energy Optimizer
 
-Safety-first final-year project for monitoring classroom occupancy, comfort and
+Project for monitoring classroom occupancy, comfort and
 electrical energy, then issuing appliance commands through a deterministic
 control policy.
 
@@ -145,3 +145,31 @@ current operating system.
 5. Comfort automation, vacancy handling and schedules.
 6. Prediction recommendations and energy-savings analytics.
 7. Dashboard UI, hardening, testing and deployment.
+
+### Local MQTT ingestion demo
+
+Start the local services, then start the FastAPI ingestion worker:
+
+```powershell
+docker compose up -d
+Set-Location backend
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+In another terminal, publish valid environment telemetry continuously. Replace
+the IDs if you are using different seeded site and classroom records:
+
+```powershell
+Set-Location backend
+python scripts/simulate_environment.py `
+  --site-id c7ef6d75-7c12-461a-bb49-73f917c3357d `
+  --classroom-id 26e97d46-7a34-4439-922a-83684bda557d
+```
+
+Verify that the worker is connected and rows are being persisted:
+
+```powershell
+Invoke-WebRequest http://localhost:8000/health/ready
+docker exec aceo-postgres psql -U aceo -d aceo -c `
+  "SELECT sensor_id, temperature_c, received_at FROM environment_readings ORDER BY received_at DESC LIMIT 10;"
+```

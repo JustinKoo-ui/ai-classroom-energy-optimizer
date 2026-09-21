@@ -20,3 +20,6 @@ cv_service/diagnostics/
 .idea/
 .vscode/
 Thumbs.db
+
+.vercel
+.env*
