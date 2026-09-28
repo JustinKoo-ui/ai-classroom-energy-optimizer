@@ -1,2 +1,1 @@
-"""HTTP and WebSocket transport layer."""
-
+"""HTTP transport layer."""

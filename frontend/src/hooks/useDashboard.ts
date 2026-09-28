@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getDashboardService } from "@/src/api/dashboard-service";
+import { getDashboardPollIntervalMs, getDashboardService } from "@/src/api/dashboard-service";
 import type {
   DashboardData,
   DeviceControlRequest,
@@ -10,41 +10,43 @@ import type {
 
 export function useDashboard() {
   const service = useMemo(() => getDashboardService(), []);
+  const pollIntervalMs = useMemo(() => getDashboardPollIntervalMs(), []);
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    service
-      .getInitialState()
-      .then((snapshot) => active && setData(snapshot))
-      .catch(() => active && setError("The classroom feed could not be loaded."))
-      .finally(() => active && setLoading(false));
+    let timer: number | undefined;
 
-    const unsubscribe = service.subscribe((event) => {
-      if (!active) return;
-      if (event.type === "snapshot.updated") {
-        setData(event.data as DashboardData);
-      } else if (event.type === "device.state_updated") {
-        const updatedDevice = event.data as DashboardData["devices"][number];
-        setData((current) =>
-          current
-            ? {
-                ...current,
-                devices: current.devices.map((device) =>
-                  device.id === updatedDevice.id ? updatedDevice : device,
-                ),
-              }
-            : current,
-        );
+    const poll = async () => {
+      try {
+        const snapshot = await service.getInitialState();
+        if (active) {
+          setData(snapshot);
+          setError(null);
+        }
+      } catch {
+        if (active) {
+          setError("The classroom feed could not be loaded. Showing the last available readings.");
+          setData((current) =>
+            current ? { ...current, connection: "disconnected" } : current,
+          );
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+          timer = window.setTimeout(poll, pollIntervalMs);
+        }
       }
-    });
+    };
+
+    void poll();
     return () => {
       active = false;
-      unsubscribe();
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [service]);
+  }, [pollIntervalMs, service]);
 
   const requestControl = useCallback(
     async (request: DeviceControlRequest) => {
@@ -65,4 +67,3 @@ export function useDashboard() {
 
   return { data, loading, error, requestControl, setScenario };
 }
-

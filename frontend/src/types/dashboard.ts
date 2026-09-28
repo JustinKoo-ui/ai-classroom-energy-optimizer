@@ -1,4 +1,4 @@
-import type { ISODateTime, JsonObject, UUID } from "./contracts";
+import type { ISODateTime, UUID } from "./contracts";
 
 export type DataStatus = "ok" | "loading" | "stale" | "error";
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -96,19 +96,8 @@ export interface DeviceControlRequest {
   reason: string;
 }
 
-export interface DashboardRealtimeEvent {
-  schema_version: "1.0";
-  event_id: UUID;
-  type: "snapshot.updated" | "device.state_updated" | "connection.changed";
-  occurred_at: ISODateTime;
-  data: DashboardData | DashboardDevice | { connection: ConnectionStatus };
-}
-
 export interface DashboardService {
   getInitialState(): Promise<DashboardData>;
-  subscribe(listener: (event: DashboardRealtimeEvent) => void): () => void;
   requestDeviceControl(request: DeviceControlRequest): Promise<{ request_id: UUID }>;
   setMockScenario?(scenario: MockScenario): void;
 }
-
-export interface FastApiDashboardBootstrap extends JsonObject {}

@@ -19,7 +19,7 @@ approve a command, and only the command dispatcher may publish it to MQTT.
 ```text
 ai-classroom-energy-optimizer/
 |-- backend/                 FastAPI modular monolith and workers
-|   |-- app/api/v1/          Versioned REST and WebSocket routes
+|   |-- app/api/v1/          Versioned REST routes
 |   |-- app/core/            Configuration, security, logging, lifecycle
 |   |-- app/domain/          Domain rules and framework-free entities
 |   |-- app/integrations/    MQTT and external service adapters
@@ -62,50 +62,33 @@ simulated classroom readings and will not control real appliances. This is the
 recommended first deployment because the backend routes, database migrations
 and MQTT dispatcher are not implemented yet.
 
-### Option A: deploy with Vercel (recommended)
+### Deploy to Cloudflare Workers
 
-1. Push this repository to GitHub.
-2. In Vercel, select **Add New Project**, import the repository, and set
-   **Root Directory** to `frontend`.
-3. Use these project settings:
-
-   ```text
-   Install Command: pnpm install --frozen-lockfile
-   Build Command:   pnpm run build
-   Output Directory: leave the framework default
-   ```
-
-4. Add these environment variables for the **Production**, **Preview** and
-   **Development** environments:
-
-   ```text
-   NEXT_PUBLIC_USE_MOCK_DATA=true
-   NEXT_PUBLIC_CLASSROOM_ID=26e97d46-7a34-4439-922a-83684bda557d
-   ```
-
-5. Click **Deploy**. Vercel will provide an HTTPS URL such as
-   `https://your-project.vercel.app`. Every push to the selected Git branch
-   will create a new deployment.
-
-The same deployment can be created from a terminal after installing the Vercel
-CLI:
+The frontend is configured for Cloudflare Workers. From the repository root,
+authenticate with Cloudflare and deploy the frontend:
 
 ```powershell
 Set-Location frontend
 corepack enable
 pnpm install --frozen-lockfile
-pnpm run build
-npx vercel
+npx wrangler login
+pnpm run deploy
 ```
+
+The `deploy` script builds the Worker with vinext and publishes it using
+Wrangler. The mock dashboard is enabled by default, so no application
+environment variables are required for the demo. Set any `NEXT_PUBLIC_*`
+values before building if needed; these values are public and bundled into
+browser JavaScript.
 
 Do not put database passwords, JWT signing keys, MQTT credentials, Roboflow
 keys or private certificates in `NEXT_PUBLIC_*` variables. Variables with that
 prefix are bundled into browser JavaScript and are public.
 
-### Option B: connect a deployed backend later
+### Connect a deployed backend later
 
-When the FastAPI API and WebSocket routes are implemented and hosted over HTTPS,
-change the Vercel variables to:
+When the FastAPI API is implemented and hosted over HTTPS, configure these
+frontend build-time variables:
 
 ```text
 NEXT_PUBLIC_USE_MOCK_DATA=false
@@ -114,12 +97,12 @@ NEXT_PUBLIC_CLASSROOM_ID=26e97d46-7a34-4439-922a-83684bda557d
 ```
 
 The API must allow the deployed frontend origin in
-`CORS_ALLOWED_ORIGINS`, support credentials if authentication is enabled, and
-serve WebSockets over `wss://`. Deploy PostgreSQL, the MQTT broker, the
-dispatcher and the FastAPI service separately; the browser must never connect
-directly to MQTT. Use the deployment variables in [.env.example](.env.example)
-as a server-side configuration checklist, but do not commit a populated `.env`
-file.
+`CORS_ALLOWED_ORIGINS` and support credentials if authentication is enabled.
+The dashboard polls the API every five seconds by default. Deploy PostgreSQL,
+the MQTT broker, the dispatcher and the FastAPI service separately; the browser
+must never connect directly to MQTT. Use the deployment variables in
+[.env.example](.env.example) as a server-side configuration checklist, but do
+not commit a populated `.env` file.
 
 ### Local production check
 
@@ -139,7 +122,7 @@ current operating system.
 ## Planned incremental delivery
 
 1. Infrastructure, database migrations and simulated MQTT devices.
-2. Telemetry ingestion, current room state and real-time dashboard transport.
+2. Telemetry ingestion, current room state and REST-polled dashboard updates.
 3. Manual control through the deterministic policy and acknowledgement loop.
 4. Occupancy detection/tracking and privacy validation.
 5. Comfort automation, vacancy handling and schedules.

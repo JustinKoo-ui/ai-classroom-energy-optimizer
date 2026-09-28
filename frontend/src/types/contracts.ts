@@ -1,5 +1,5 @@
 /**
- * Canonical frontend wire contracts for REST, WebSocket and MQTT documentation.
+ * Canonical frontend wire contracts for REST and MQTT documentation.
  *
  * The browser never connects to MQTT. MQTT types live here so fixtures and
  * protocol documentation can be checked against one shared vocabulary.
@@ -414,80 +414,6 @@ export interface EnergySavingsEstimate {
   methodology_notes: string | null;
   calculated_at: ISODateTime;
 }
-
-// WebSocket
-
-export interface ConnectionReadyData {
-  connection_id: UUID;
-  heartbeat_seconds: number;
-}
-
-export interface HeartbeatData {
-  server_time: ISODateTime;
-}
-
-export interface WebSocketErrorData {
-  code: string;
-  message: string;
-  request_id?: UUID;
-  details?: JsonObject;
-}
-
-export interface ServerEventDataMap {
-  "connection.ready": ConnectionReadyData;
-  "snapshot.updated": ClassroomSnapshot;
-  "occupancy.updated": OccupancyState;
-  "environment.updated": EnvironmentState;
-  "device.state_updated": DeviceState;
-  "energy.updated": EnergyUpdate;
-  "prediction.updated": DeparturePrediction | null;
-  "recommendation.created": AIRecommendation;
-  "control.decision": ControlDecisionSummary;
-  "command.status": DeviceCommand;
-  "override.updated": ManualOverride;
-  "schedule.updated": Schedule;
-  "alert.created": SystemEvent;
-  heartbeat: HeartbeatData;
-  error: WebSocketErrorData;
-}
-
-export type ServerEventType = keyof ServerEventDataMap;
-
-export interface ServerEventEnvelope<
-  TType extends ServerEventType,
-  TData extends ServerEventDataMap[TType],
-> {
-  schema_version: `1.${number}`;
-  event_id: UUID;
-  type: TType;
-  occurred_at: ISODateTime;
-  classroom_id: UUID;
-  sequence: number;
-  data: TData;
-}
-
-export type ServerEvent = {
-  [K in ServerEventType]: ServerEventEnvelope<K, ServerEventDataMap[K]>;
-}[ServerEventType];
-
-export interface ClientEventDataMap {
-  "snapshot.request": JsonObject;
-  "stream.configure": { streams: string[] };
-  ping: { client_time?: ISODateTime };
-}
-
-export type ClientEventType = keyof ClientEventDataMap;
-
-export interface ClientEventEnvelope<TType extends ClientEventType> {
-  schema_version: `1.${number}`;
-  request_id: UUID;
-  type: TType;
-  data: ClientEventDataMap[TType];
-}
-
-export type ClientEvent = {
-  [K in ClientEventType]: ClientEventEnvelope<K>;
-}[ClientEventType];
 
 // MQTT (for shared fixtures and documentation; never instantiate in browser UI)
 

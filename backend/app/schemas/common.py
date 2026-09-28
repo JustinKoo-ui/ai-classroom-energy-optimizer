@@ -1,4 +1,4 @@
-"""Shared API and realtime contracts.
+"""Shared API contracts.
 
 These are boundary models, not persistence models. Domain policy code should use
 framework-free value objects and map to these models at transport boundaries.

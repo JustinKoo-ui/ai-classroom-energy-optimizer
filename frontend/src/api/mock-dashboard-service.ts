@@ -1,7 +1,5 @@
 import type {
   DashboardData,
-  DashboardDevice,
-  DashboardRealtimeEvent,
   DashboardService,
   DeviceControlRequest,
   MockScenario,
@@ -203,27 +201,17 @@ function createInitialDashboard(): DashboardData {
 
 export class MockDashboardService implements DashboardService {
   private state = createInitialDashboard();
-  private listeners = new Set<(event: DashboardRealtimeEvent) => void>();
-  private timer: number | null = null;
   private scenario: MockScenario = "live";
+  private firstRead = true;
 
   async getInitialState(): Promise<DashboardData> {
-    await wait(700);
-    return structuredClone(this.state);
-  }
-
-  subscribe(listener: (event: DashboardRealtimeEvent) => void): () => void {
-    this.listeners.add(listener);
-    if (this.timer === null) {
-      this.timer = window.setInterval(() => this.tick(), 2_500);
+    if (this.firstRead) {
+      this.firstRead = false;
+      await wait(700);
+    } else if (this.scenario !== "connection_loss") {
+      this.tick();
     }
-    return () => {
-      this.listeners.delete(listener);
-      if (this.listeners.size === 0 && this.timer !== null) {
-        window.clearInterval(this.timer);
-        this.timer = null;
-      }
-    };
+    return structuredClone(this.state);
   }
 
   async requestDeviceControl(
@@ -240,7 +228,6 @@ export class MockDashboardService implements DashboardService {
       status_label: "Awaiting policy approval",
       updated_at: now(),
     };
-    this.emitDevice(this.state.devices[deviceIndex]);
     await wait(650);
 
     this.state.devices[deviceIndex] = {
@@ -250,20 +237,17 @@ export class MockDashboardService implements DashboardService {
       status_label: "Applied · policy approved",
       updated_at: now(),
     };
-    this.emitDevice(this.state.devices[deviceIndex]);
     return { request_id: requestId };
   }
 
   setMockScenario(scenario: MockScenario): void {
     this.scenario = scenario;
     this.applyScenario();
-    this.emitSnapshot();
   }
 
   private tick(): void {
     if (this.scenario === "connection_loss") {
       this.applyScenario();
-      this.emitSnapshot();
       return;
     }
     const timestamp = now();
@@ -281,7 +265,6 @@ export class MockDashboardService implements DashboardService {
     this.state.last_updated_at = timestamp;
     this.state.ai.expires_at = new Date(Date.now() + 15_000).toISOString();
     this.applyScenario();
-    this.emitSnapshot();
   }
 
   private applyScenario(): void {
@@ -311,27 +294,4 @@ export class MockDashboardService implements DashboardService {
     }
   }
 
-  private emitSnapshot(): void {
-    this.emit({
-      schema_version: "1.0",
-      event_id: makeId(),
-      type: "snapshot.updated",
-      occurred_at: now(),
-      data: structuredClone(this.state),
-    });
-  }
-
-  private emitDevice(device: DashboardDevice): void {
-    this.emit({
-      schema_version: "1.0",
-      event_id: makeId(),
-      type: "device.state_updated",
-      occurred_at: now(),
-      data: structuredClone(device),
-    });
-  }
-
-  private emit(event: DashboardRealtimeEvent): void {
-    for (const listener of this.listeners) listener(event);
-  }
 }

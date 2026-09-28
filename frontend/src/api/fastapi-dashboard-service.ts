@@ -1,6 +1,5 @@
 import type {
   DashboardData,
-  DashboardRealtimeEvent,
   DashboardService,
   DeviceControlRequest,
 } from "@/src/types/dashboard";
@@ -19,17 +18,6 @@ export class FastApiDashboardService implements DashboardService {
     );
     if (!response.ok) throw new Error("Unable to load classroom dashboard");
     return (await response.json()) as DashboardData;
-  }
-
-  subscribe(listener: (event: DashboardRealtimeEvent) => void): () => void {
-    const url = new URL(this.apiBaseUrl);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.pathname = `/api/v1/ws/classrooms/${this.classroomId}`;
-    const socket = new WebSocket(url);
-    socket.addEventListener("message", (message) => {
-      listener(JSON.parse(message.data as string) as DashboardRealtimeEvent);
-    });
-    return () => socket.close(1000, "Dashboard unmounted");
   }
 
   async requestDeviceControl(

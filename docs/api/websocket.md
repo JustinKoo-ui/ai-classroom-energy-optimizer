@@ -1,5 +1,9 @@
 # WebSocket API v1
 
+**Status: Deferred.** The dashboard currently uses REST polling, and there is no
+WebSocket client or backend transport implementation. This document is retained
+as a future contract only.
+
 Endpoint: `/api/v1/ws/classrooms/{classroom_id}`
 
 Use a short-lived access token in the initial authorized handshake (preferred:
@@ -104,4 +108,3 @@ consistent.
 - Authentication expiry closes with `4001`; authorization failure uses `4003`;
   incompatible schema uses `4006`; maintenance uses `1012`.
 - Clients retry with exponential backoff and jitter, capped at 30 seconds.
-

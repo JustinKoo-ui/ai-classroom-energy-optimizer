@@ -29,7 +29,7 @@ controls. Broker ACLs must also make the shortcut impossible.
 - `docs/control-policy.md` — normative automation and safety rules.
 - `docs/requirements-traceability.md` — mapping from objectives to components.
 - `docs/api/rest.md` — REST contract.
-- `docs/api/websocket.md` — real-time browser contract.
+- `docs/api/websocket.md` — deferred real-time browser contract.
 - `docs/mqtt.md` — device topics, payloads, QoS and ACLs.
 - `database/schema.sql` — persistence and audit model.
 
@@ -50,7 +50,7 @@ controls. Broker ACLs must also make the shortcut impossible.
 
 1. External contracts are versioned. Current REST path and message schema are
    `v1`.
-2. Wire fields use `snake_case` in REST, WebSocket and MQTT. TypeScript keeps
+2. Wire fields use `snake_case` in REST and MQTT. TypeScript keeps
    these names to prevent hidden mapping bugs.
 3. Identifiers are UUID strings. Timestamps are timezone-aware UTC ISO 8601.
 4. Every MQTT message has `schema_version`, `message_id` and `occurred_at`.
@@ -82,8 +82,9 @@ controls. Broker ACLs must also make the shortcut impossible.
 ## Frontend conventions
 
 - React + TypeScript in strict mode.
-- Server state and realtime state remain separate from ephemeral UI state.
-- REST creates/changes durable resources; WebSocket streams updates.
+- Server state remains separate from ephemeral UI state.
+- REST creates/changes durable resources and supplies polled dashboard updates.
+  WebSocket delivery is deferred.
 - Manual controls show pending, acknowledged, applied, rejected and timed-out
   states. Never optimistically claim that a physical device changed.
 - Provide keyboard access, readable chart labels and non-color-only statuses.
@@ -102,7 +103,7 @@ controls. Broker ACLs must also make the shortcut impossible.
 Before merging control changes:
 
 1. Run unit tests including policy allow/deny truth tables.
-2. Run contract tests for REST, WS and MQTT examples.
+2. Run contract tests for REST and MQTT examples.
 3. Run integration tests with PostgreSQL and a test MQTT broker.
 4. Simulate stale sensors, CV loss, duplicate MQTT delivery, offline devices,
    conflicting override/schedule, command timeout and rapid state changes.

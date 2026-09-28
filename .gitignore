@@ -21,5 +21,4 @@ cv_service/diagnostics/
 .vscode/
 Thumbs.db
 
-.vercel
 .env*

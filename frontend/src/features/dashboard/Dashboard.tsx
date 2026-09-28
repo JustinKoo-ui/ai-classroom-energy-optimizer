@@ -11,7 +11,7 @@ import { useDashboard } from "@/src/hooks/useDashboard";
 export function Dashboard() {
   const { data, loading, error, requestControl, setScenario } = useDashboard();
 
-  if (loading || !data) {
+  if (loading && !data) {
     return (
       <main className="dashboard-shell dashboard-loading" aria-busy="true">
         <Skeleton height={64} borderRadius={18} />
@@ -19,6 +19,16 @@ export function Dashboard() {
           {Array.from({ length: 7 }).map((_, index) => (
             <Skeleton key={index} height={210} borderRadius={22} />
           ))}
+        </div>
+      </main>
+    );
+  }
+
+  if (!data) {
+    return (
+      <main className="dashboard-shell">
+        <div className="inline-alert" role="alert">
+          {error ?? "No classroom data is available."} Retrying automatically.
         </div>
       </main>
     );
@@ -57,7 +67,7 @@ export function Dashboard() {
                 <option value="live">Live operation</option>
                 <option value="sensor_error">Lux sensor fault</option>
                 <option value="device_offline">Fan disconnected</option>
-                <option value="connection_loss">WebSocket offline</option>
+                <option value="connection_loss">Data feed offline</option>
               </select>
             </label>
             <span className={`connection-pill connection-pill--${data.connection}`}>
@@ -70,8 +80,8 @@ export function Dashboard() {
         {error && <div className="inline-alert" role="alert">{error}</div>}
         {data.connection === "disconnected" && (
           <div className="connection-banner" role="status">
-            <div><strong>Realtime connection lost</strong><span>Showing the last confirmed classroom readings.</span></div>
-            <span>Retrying automatically…</span>
+            <div><strong>Classroom feed unavailable</strong><span>Showing the last confirmed classroom readings.</span></div>
+            <span>Polling will retry automatically.</span>
           </div>
         )}
 

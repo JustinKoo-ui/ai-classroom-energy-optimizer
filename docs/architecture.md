@@ -11,11 +11,12 @@ workers**:
 - The prediction worker may initially run inside the backend process, then move
   to its own worker without changing its input/output contracts.
 - ESP32 nodes communicate only through the MQTT broker.
-- React communicates only with FastAPI over REST and WebSocket.
+- React communicates with FastAPI over REST. The dashboard polls for updates;
+  WebSocket delivery is deferred.
 
 This is simpler to operate than premature microservices while preserving clear
-module boundaries. Scale-out points are MQTT ingestion, CV inference, prediction
-inference and WebSocket fan-out.
+module boundaries. Scale-out points are MQTT ingestion, CV inference and
+prediction inference.
 
 ## 2. System context
 
@@ -26,7 +27,7 @@ flowchart LR
     CV -->|"aggregate occupancy event"| Broker
     Broker <-->|"telemetry, state, approved commands, acknowledgements"| API["FastAPI backend"]
     API <-->|"SQL"| DB[("PostgreSQL")]
-    API <-->|"REST + WebSocket"| UI["React dashboard"]
+    API <-->|"REST polling"| UI["React dashboard"]
     API --> Predict["60-second departure model"]
     Predict -->|"probability only"| API
 ```
@@ -57,7 +58,7 @@ The following invariant must hold in code, broker ACLs and tests:
 
 | Module | Responsibility | Must not do |
 |---|---|---|
-| API | Authentication, validation, REST/WS transport | Publish MQTT commands directly |
+| API | Authentication, validation and REST transport | Publish MQTT commands directly |
 | Telemetry ingestion | Validate MQTT envelopes, deduplicate, persist readings | Infer actuator intent |
 | Room-state estimator | Produce a freshness-aware current snapshot | Control appliances |
 | Prediction | Return probability of departure within 60 seconds | Return a device command |
@@ -67,7 +68,6 @@ The following invariant must hold in code, broker ACLs and tests:
 | MQTT dispatcher | Publish persisted commands and consume acknowledgements | Change policy decisions |
 | Scheduler | Emit control requests at due times | Publish directly to MQTT |
 | Energy analytics | Aggregate readings and compare with versioned baselines | Claim causal savings without a baseline |
-| Realtime hub | Publish sanitized domain events to authorized WS clients | Treat WS as durable storage |
 
 Recommended FastAPI dependency direction:
 
@@ -95,7 +95,7 @@ domain -> no FastAPI, SQLAlchemy, MQTT or model SDK imports
 7. An allowed decision and its command are written atomically. A dispatcher
    publishes the command with an idempotency key and waits for acknowledgement.
 8. Device acknowledgements and state reconciliation update command status and
-   produce audit and WebSocket events.
+   persisted state. The dashboard sees updates on its next REST poll.
 
 ## 6. Deterministic control precedence
 
@@ -193,4 +193,3 @@ keys, tokens, raw frames or unrestricted MQTT credentials.
   data, oscillating counts, offline devices and duplicate messages.
 - Hardware-in-the-loop: relays disconnected from mains first, then supervised
   low-risk loads before high-power appliance integration.
-

@@ -128,7 +128,8 @@ Response (`202` when policy evaluation has been accepted for processing, or
 ```
 
 An allowed decision is not an applied command. Clients follow the command using
-`GET /commands/{id}` or WebSocket `command.status` events.
+`GET /commands/{id}`. The dashboard refreshes classroom state by polling its
+REST endpoint; WebSocket delivery is deferred.
 
 ## Manual overrides
 
@@ -239,4 +240,3 @@ baseline energy, actual energy, signed estimated saving and confidence/quality.
 - `409` idempotency/version/state conflict.
 - `422` invalid fields; `429` command rate limit.
 - `503` required dependency unavailable; no command is assumed applied.
-
