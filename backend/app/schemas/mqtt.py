@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Generic, TypeVar
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from .common import (
     Probability,
     UtcDateTime,
 )
+
 
 PayloadT = TypeVar("PayloadT")
 
@@ -35,6 +36,25 @@ class EnvironmentTelemetryPayload(ContractModel):
     relative_humidity_pct: float = Field(ge=0, le=100)
     illuminance_lux: float = Field(ge=0, le=200_000)
     sample_interval_ms: int = Field(gt=0)
+
+
+class EnvironmentTelemetryPayloadV2(ContractModel):
+    sensor_id: str = Field(min_length=1, max_length=200)
+    temperature_c: float = Field(ge=-20, le=80)
+    relative_humidity_pct: float = Field(ge=0, le=100)
+    illuminance_adc: int = Field(ge=0, le=4095)
+    motion_detected: bool | None = None
+    sample_interval_ms: int = Field(gt=0)
+
+
+class MqttEnvelopeV2(ContractModel, Generic[PayloadT]):
+    schema_version: str = Field(pattern=r"^2\.[0-9]+$")
+    message_id: UUID
+    occurred_at: UtcDateTime
+    site_id: UUID
+    classroom_id: UUID
+    producer_id: str = Field(min_length=1, max_length=200)
+    payload: PayloadT
 
 
 class PowerTelemetryPayload(ContractModel):
@@ -58,7 +78,7 @@ class OccupancyObservationPayload(ContractModel):
     source: str = "roboflow_bytetrack"
 
 
-class AvailabilityStatus(str, Enum):
+class AvailabilityStatus(StrEnum):
     ONLINE = "online"
     OFFLINE = "offline"
 
@@ -66,7 +86,7 @@ class AvailabilityStatus(str, Enum):
 class AvailabilityPayload(ContractModel):
     status: AvailabilityStatus
     boot_id: UUID
-    firmware_version: str
+    firmware_version: str = Field(min_length=1, max_length=100)
 
 
 class DeviceStatePayload(ContractModel):
@@ -74,6 +94,14 @@ class DeviceStatePayload(ContractModel):
     state: JsonObject
     fault_codes: list[str] = Field(default_factory=list)
     state_version: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_relay_state(self) -> DeviceStatePayload:
+        if not isinstance(self.state.get("on"), bool):
+            raise ValueError("relay state must include a boolean 'on' field")
+        if self.state.get("mode") not in {"auto", "manual"}:
+            raise ValueError("relay state mode must be 'auto' or 'manual'")
+        return self
 
 
 class ApprovedCommandPayload(ContractModel):
@@ -86,7 +114,7 @@ class ApprovedCommandPayload(ContractModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-class AcknowledgementStatus(str, Enum):
+class AcknowledgementStatus(StrEnum):
     ACCEPTED = "accepted"
     APPLIED = "applied"
     REJECTED = "rejected"
@@ -103,8 +131,8 @@ class CommandAcknowledgementPayload(ContractModel):
 
     @model_validator(mode="after")
     def validate_applied_state(self) -> CommandAcknowledgementPayload:
-        if self.status is AcknowledgementStatus.APPLIED:
-            if self.reported_state is None or self.applied_at is None:
-                raise ValueError("applied acknowledgement requires reported_state and applied_at")
+        if self.status is AcknowledgementStatus.APPLIED and (
+            self.reported_state is None or self.applied_at is None
+        ):
+            raise ValueError("applied acknowledgement requires reported_state and applied_at")
         return self
-

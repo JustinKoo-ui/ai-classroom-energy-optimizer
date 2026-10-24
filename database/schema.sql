@@ -158,12 +158,16 @@ CREATE TABLE environment_readings (
     sensor_id text NOT NULL,
     temperature_c numeric(6, 3) NOT NULL CHECK (temperature_c BETWEEN -20 AND 80),
     relative_humidity_pct numeric(6, 3) NOT NULL CHECK (relative_humidity_pct BETWEEN 0 AND 100),
-    illuminance_lux numeric(12, 3) NOT NULL CHECK (illuminance_lux BETWEEN 0 AND 200000),
+    illuminance_lux numeric(12, 3) CHECK (illuminance_lux BETWEEN 0 AND 200000),
+    illuminance_adc integer CHECK (illuminance_adc IS NULL OR illuminance_adc BETWEEN 0 AND 4095),
+    motion_detected boolean,
     sample_interval_ms integer CHECK (sample_interval_ms IS NULL OR sample_interval_ms > 0),
     quality jsonb NOT NULL DEFAULT '{}'::jsonb,
     occurred_at timestamptz NOT NULL,
     received_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (jsonb_typeof(quality) = 'object')
+    CHECK (jsonb_typeof(quality) = 'object'),
+    CONSTRAINT ck_environment_readings_light_value
+        CHECK (illuminance_lux IS NOT NULL OR illuminance_adc IS NOT NULL)
 );
 
 CREATE INDEX ix_environment_readings_classroom_time
@@ -174,7 +178,9 @@ CREATE TABLE environment_latest (
     reading_id uuid NOT NULL REFERENCES environment_readings(id) ON DELETE RESTRICT,
     temperature_c numeric(6, 3) NOT NULL,
     relative_humidity_pct numeric(6, 3) NOT NULL,
-    illuminance_lux numeric(12, 3) NOT NULL,
+    illuminance_lux numeric(12, 3),
+    illuminance_adc integer CHECK (illuminance_adc IS NULL OR illuminance_adc BETWEEN 0 AND 4095),
+    motion_detected boolean,
     observed_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
 );

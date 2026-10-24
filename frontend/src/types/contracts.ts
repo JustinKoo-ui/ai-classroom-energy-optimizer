@@ -427,11 +427,30 @@ export interface MqttEnvelope<TPayload> {
   payload: TPayload;
 }
 
+export interface MqttEnvelopeV2<TPayload> {
+  schema_version: `2.${number}`;
+  message_id: UUID;
+  occurred_at: ISODateTime;
+  site_id: UUID;
+  classroom_id: UUID;
+  producer_id: string;
+  payload: TPayload;
+}
+
 export interface EnvironmentTelemetryPayload {
   sensor_id: string;
   temperature_c: number;
   relative_humidity_pct: number;
   illuminance_lux: number;
+  sample_interval_ms: number;
+}
+
+export interface EnvironmentTelemetryPayloadV2 {
+  sensor_id: string;
+  temperature_c: number;
+  relative_humidity_pct: number;
+  illuminance_adc: number;
+  motion_detected: boolean | null;
   sample_interval_ms: number;
 }
 

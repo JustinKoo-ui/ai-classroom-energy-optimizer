@@ -18,13 +18,17 @@ export function MetricCard({ metric }: { metric: DashboardMetric }) {
           {metricCodes[metric.id]}
         </span>
         <span className={`status-dot status-dot--${metric.status}`}>
-          {metric.status === "ok" ? "Live" : metric.status}
+          {metric.status === "ok"
+            ? "Live"
+            : metric.status === "unknown"
+              ? "Unknown"
+              : metric.status}
         </span>
       </div>
       <p className="metric-card__label">{metric.label}</p>
       {metric.status === "error" ? (
         <div className="metric-card__error">
-          <strong>Sensor unavailable</strong>
+          <strong>{metric.id === "occupancy" ? "Camera feed unavailable" : "Sensor unavailable"}</strong>
           <span>{metric.detail}</span>
         </div>
       ) : (
@@ -42,4 +46,3 @@ export function MetricCard({ metric }: { metric: DashboardMetric }) {
     </article>
   );
 }
-

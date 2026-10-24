@@ -1,4 +1,4 @@
-# MQTT Contract v1
+# MQTT Contracts v1 and v2
 
 Topic root: `aceo/v1/{site_id}/{classroom_id}`
 
@@ -43,6 +43,9 @@ Every payload is UTF-8 JSON:
 Consumers reject unsupported major versions, malformed UUID/timestamps, topic
 and payload identity mismatches, timestamps too far in the future and payloads
 outside physical bounds. Rejected payloads cannot update authoritative state.
+Schema `1.0` remains supported for calibrated lux senders. New LM393 sensor
+gateways use environment payload schema `2.0` and report raw ADC counts instead
+of claiming an uncalibrated lux value.
 
 ## Environment telemetry
 
@@ -65,6 +68,35 @@ Topic: `.../telemetry/environment`
   }
 }
 ```
+
+### Environment telemetry schema 2.0
+
+Topic: `.../telemetry/environment`
+
+```json
+{
+  "schema_version": "2.0",
+  "message_id": "22ee6fe6-e6f0-474e-bcdd-b708b0d73b48",
+  "occurred_at": "2026-10-03T13:00:00Z",
+  "site_id": "c7ef6d75-7c12-461a-bb49-73f917c3357d",
+  "classroom_id": "26e97d46-7a34-4439-922a-83684bda557d",
+  "producer_id": "esp32-room-a204",
+  "payload": {
+    "sensor_id": "esp32-room-a204",
+    "temperature_c": 26.4,
+    "relative_humidity_pct": 66.0,
+    "illuminance_adc": 2048,
+    "motion_detected": null,
+    "sample_interval_ms": 5000
+  }
+}
+```
+
+`illuminance_adc` is the ESP32's 12-bit ADC count (0–4095), not lux. A PIR
+signal describes motion detection only; it is not an occupant count or proof
+that the room is vacant. It is `null` during the PIR module's 30-second startup
+period. Both v1 and v2 observations are persisted in
+`environment_readings`; lux is nullable for v2 readings.
 
 ## Power telemetry
 
@@ -146,7 +178,10 @@ The broker last-will payload uses `status: offline`. Device state payload:
 ```
 
 These payloads are placed inside the common envelope. Retained state is treated
-as a startup hint and its `occurred_at` still determines freshness.
+as a startup hint and its `occurred_at` still determines freshness. The local
+ESP32 prototype reports controller availability on
+`gateway/{producer_id}/status`; its relay state is reported on the per-device
+state topics above.
 
 ## Approved command
 
@@ -165,7 +200,7 @@ Topic: `.../command/{device_id}/set`
     "decision_id": "a5ca49c2-62da-44d8-a780-a9247ec7ab85",
     "device_id": "ace7d91a-f09f-4124-9864-997823ecda17",
     "action": "set_power",
-    "value": {"on": true},
+    "value": {"on": true, "mode": "manual"},
     "expires_at": "2026-08-14T03:30:32Z",
     "idempotency_key": "manual-8cb4b99e"
   }
@@ -218,3 +253,33 @@ acknowledgement includes the resulting state.
 - Dashboard/browser: no broker identity.
 
 Wildcard permissions must remain scoped below assigned site/classroom roots.
+
+The checked-in local Mosquitto ACL uses separate password-authenticated
+identities for the ESP32, backend ingestion, and backend dispatcher. The
+ESP32 may publish only the local environment telemetry, its three relay state
+topics, acknowledgements, and gateway status; it may subscribe only to the
+three exact relay command topics. The ingestion identity is read-only, and
+only the dispatcher identity may publish commands. Commands are always sent
+with `retain=false`. The password file is local and ignored by Git.
+
+The local broker is plaintext and scoped to the seeded development classroom.
+Do not expose port 1883 publicly or use these credentials/ACLs in production.
+Production requires TLS, unique per-device credentials, assigned-root ACLs,
+and authenticated REST users.
+
+## Local ESP32 relay prototype
+
+The supplied ESP32 sketch is represented by one gateway controlling three
+logical digital outputs. Each reported state contains `on` and `mode`
+(`auto` or `manual`); state messages are retained, while commands and
+acknowledgements are not. The active-LOW outputs preserve the tested PIR,
+temperature/humidity, and raw LDR ADC automation. PIR LOW forces all relays
+OFF, and an ON command is rejected if the PIR master reports no motion.
+
+This firmware supports only `set_power` and `set_mode`; it rejects
+`set_temperature`, `set_fan_speed`, and `set_brightness`. For this local relay
+adapter, an approved `set_power` value includes `{"on": true, "mode":
+"manual"}` so the output cannot be overwritten by the next automatic cycle.
+The frontend uses REST polling; it never connects to the broker. See
+[`firmware/esp32/README.md`](../firmware/esp32/README.md) for the local setup
+and low-voltage limitations.

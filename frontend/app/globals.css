@@ -82,6 +82,7 @@ button { color: inherit; }
 .status-dot::before { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 6px; background: #45ae72; }
 .status-dot--error::before { background: var(--red); }
 .status-dot--stale::before { background: var(--amber); }
+.status-dot--unknown::before { background: #94a39e; }
 .metric-card--occupancy .status-dot { color: #b9d1cb; }
 .metric-card__label { margin: 18px 0 5px; color: #5e736e; font-size: 12px; font-weight: 650; }
 .metric-card--occupancy .metric-card__label { color: #c5d8d4; }

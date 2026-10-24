@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aceo-cv-service"
+version = "0.1.0"
+description = "Observation-only Roboflow classroom occupancy worker"
+requires-python = ">=3.11"
+dependencies = [
+  "inference>=0.52,<1.0",
+  "paho-mqtt~=1.6.1",
+  "python-dotenv>=1.0,<2.0",
+  "supervision==0.29.1",
+]
+
+[project.scripts]
+aceo-cv-worker = "aceo_cv.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aceo_cv"]

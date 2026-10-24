@@ -15,6 +15,8 @@ export function DeviceControlCard({
   compact = false,
 }: DeviceControlCardProps) {
   const disabled = !device.connected || device.pending;
+  const powerControlDisabled =
+    disabled || (device.hardware_backed && device.mode === "auto");
   const manualControlDisabled = disabled || device.mode === "auto";
   const submit = (patch: DeviceControlRequest["patch"], reason: string) =>
     onRequest({ device_id: device.id, patch, reason });
@@ -32,7 +34,7 @@ export function DeviceControlCard({
           role="switch"
           aria-checked={device.is_on}
           aria-label={`Turn ${device.name} ${device.is_on ? "off" : "on"}`}
-          disabled={disabled}
+          disabled={powerControlDisabled}
           onClick={() => submit({ is_on: !device.is_on }, "Dashboard power control")}
         >
           <span />
@@ -52,13 +54,16 @@ export function DeviceControlCard({
           </button>
         ))}
       </div>
+      {device.hardware_backed && device.mode === "auto" && (
+        <small>Switch to Manual before using the relay power control.</small>
+      )}
 
       {device.kind === "air_conditioner" && device.target_temperature_c !== null && (
         <div className="temperature-control">
           <button
             type="button"
             aria-label="Decrease target temperature"
-            disabled={disabled || device.target_temperature_c <= 18}
+            disabled={disabled || device.hardware_backed || device.target_temperature_c <= 18}
             onClick={() =>
               submit(
                 { target_temperature_c: device.target_temperature_c! - 1 },
@@ -75,7 +80,7 @@ export function DeviceControlCard({
           <button
             type="button"
             aria-label="Increase target temperature"
-            disabled={disabled || device.target_temperature_c >= 30}
+            disabled={disabled || device.hardware_backed || device.target_temperature_c >= 30}
             onClick={() =>
               submit(
                 { target_temperature_c: device.target_temperature_c! + 1 },
@@ -86,6 +91,9 @@ export function DeviceControlCard({
             +
           </button>
         </div>
+      )}
+      {device.kind === "air_conditioner" && device.target_temperature_c !== null && device.hardware_backed && (
+        <small>Setpoint is simulated; this relay supports ON/OFF only.</small>
       )}
 
       {device.kind === "fan" && device.fan_speed !== null && (
@@ -101,7 +109,7 @@ export function DeviceControlCard({
                 type="button"
                 className={device.fan_speed === speed ? "is-active" : ""}
                 aria-label={`Set fan speed to ${speed}`}
-                disabled={manualControlDisabled}
+                disabled={manualControlDisabled || device.hardware_backed}
                 onClick={() =>
                   submit(
                     { fan_speed: speed },
@@ -113,19 +121,24 @@ export function DeviceControlCard({
               </button>
             ))}
           </div>
-          {device.mode === "auto" && <small>Switch to Manual to choose a fixed speed.</small>}
+          {device.hardware_backed
+            ? <small>Fan speed is simulated; this relay supports ON/OFF only.</small>
+            : device.mode === "auto" && <small>Switch to Manual to choose a fixed speed.</small>}
         </div>
       )}
 
       {device.kind === "lighting" && device.brightness_pct !== null && (
         <BrightnessControl
           value={device.brightness_pct}
-          disabled={manualControlDisabled}
+          disabled={manualControlDisabled || device.hardware_backed}
           automatic={device.mode === "auto"}
           onCommit={(brightness_pct) =>
             submit({ brightness_pct }, "Dashboard lighting brightness adjustment")
           }
         />
+      )}
+      {device.kind === "lighting" && device.brightness_pct !== null && device.hardware_backed && (
+        <small>Brightness is simulated; this relay supports ON/OFF only.</small>
       )}
 
       {!device.connected && (
@@ -138,7 +151,13 @@ export function DeviceControlCard({
         <span className={device.connected ? "device-online" : "device-offline"}>
           {device.connected ? (device.pending ? "Pending approval" : device.status_label) : "Disconnected"}
         </span>
-        <strong>{device.active_power_w >= 1000 ? `${(device.active_power_w / 1000).toFixed(2)} kW` : `${device.active_power_w} W`}</strong>
+        <strong>
+          {device.hardware_backed
+            ? "Power not measured"
+            : device.active_power_w >= 1000
+              ? `${(device.active_power_w / 1000).toFixed(2)} kW`
+              : `${device.active_power_w} W`}
+        </strong>
       </footer>
     </article>
   );

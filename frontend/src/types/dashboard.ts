@@ -1,10 +1,10 @@
 import type { ISODateTime, UUID } from "./contracts";
 
-export type DataStatus = "ok" | "loading" | "stale" | "error";
+export type DataStatus = "ok" | "loading" | "stale" | "unknown" | "error";
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 export type DeviceKind = "air_conditioner" | "fan" | "lighting";
 export type DeviceMode = "auto" | "manual";
-export type MockScenario = "live" | "sensor_error" | "device_offline" | "connection_loss";
+export type MockScenario = "live" | "device_offline" | "connection_loss";
 
 export interface DashboardMetric {
   id:
@@ -41,6 +41,7 @@ export interface DashboardDevice {
   active_power_w: number;
   status_label: string;
   updated_at: ISODateTime;
+  hardware_backed?: boolean;
 }
 
 export interface AIInsight {

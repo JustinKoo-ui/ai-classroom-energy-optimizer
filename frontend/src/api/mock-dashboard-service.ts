@@ -36,37 +36,37 @@ function createInitialDashboard(): DashboardData {
       {
         id: "temperature",
         label: "Temperature",
-        value: 25.8,
-        display_value: "25.8",
+        value: null,
+        display_value: "--",
         unit: "°C",
-        detail: "Comfort target 26°C",
+        detail: "Waiting for live DHT22 data",
         trend: "down",
-        trend_label: "0.4°C cooler",
-        status: "ok",
+        trend_label: "No sensor reading",
+        status: "loading",
         updated_at: timestamp,
       },
       {
         id: "humidity",
         label: "Humidity",
-        value: 64,
-        display_value: "64",
+        value: null,
+        display_value: "--",
         unit: "%",
-        detail: "Within comfort range",
+        detail: "Waiting for live DHT22 data",
         trend: "steady",
-        trend_label: "No change",
-        status: "ok",
+        trend_label: "No sensor reading",
+        status: "loading",
         updated_at: timestamp,
       },
       {
         id: "ambient_light",
         label: "Ambient light",
-        value: 268,
-        display_value: "268",
-        unit: "lux",
-        detail: "32 lux below target",
+        value: null,
+        display_value: "--",
+        unit: "ADC counts",
+        detail: "Waiting for live LDR data",
         trend: "up",
-        trend_label: "Daylight increasing",
-        status: "ok",
+        trend_label: "No sensor reading",
+        status: "loading",
         updated_at: timestamp,
       },
       {
@@ -257,11 +257,7 @@ export class MockDashboardService implements DashboardService {
       if (metric) Object.assign(metric, { value, display_value: display, updated_at: timestamp });
     };
     const power = Math.max(1.2, 2.78 + drift * 0.16);
-    const temperature = 25.8 + drift * 0.12;
-    const humidity = 64 + drift * 0.8;
     updateMetric("current_power", power, power.toFixed(2));
-    updateMetric("temperature", temperature, temperature.toFixed(1));
-    updateMetric("humidity", humidity, Math.round(humidity).toString());
     this.state.last_updated_at = timestamp;
     this.state.ai.expires_at = new Date(Date.now() + 15_000).toISOString();
     this.applyScenario();
@@ -269,17 +265,6 @@ export class MockDashboardService implements DashboardService {
 
   private applyScenario(): void {
     this.state.connection = this.scenario === "connection_loss" ? "disconnected" : "connected";
-    const lightMetric = this.state.metrics.find((metric) => metric.id === "ambient_light");
-    if (lightMetric) {
-      lightMetric.status =
-        this.scenario === "sensor_error"
-          ? "error"
-          : this.scenario === "connection_loss"
-            ? "stale"
-            : "ok";
-      lightMetric.detail =
-        this.scenario === "sensor_error" ? "Lux sensor is not responding" : "32 lux below target";
-    }
     const fan = this.state.devices.find((device) => device.kind === "fan");
     if (fan) {
       fan.connected = this.scenario !== "device_offline";
@@ -288,9 +273,7 @@ export class MockDashboardService implements DashboardService {
     if (this.scenario === "connection_loss") {
       for (const metric of this.state.metrics) metric.status = "stale";
     } else {
-      for (const metric of this.state.metrics) {
-        if (metric.id !== "ambient_light" || this.scenario !== "sensor_error") metric.status = "ok";
-      }
+      for (const metric of this.state.metrics) metric.status = "ok";
     }
   }
 

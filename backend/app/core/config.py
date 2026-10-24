@@ -17,7 +17,36 @@ class Settings(BaseSettings):
     mqtt_client_id: str = Field(default="aceo-backend-ingestion", alias="MQTT_CLIENT_ID")
     mqtt_username: str | None = Field(default=None, alias="MQTT_USERNAME")
     mqtt_password: str | None = Field(default=None, alias="MQTT_PASSWORD")
-
+    mqtt_dispatcher_client_id: str = Field(
+        default="aceo-backend-dispatcher",
+        alias="MQTT_DISPATCHER_CLIENT_ID",
+    )
+    mqtt_dispatcher_producer_id: str = Field(
+        default="command-dispatcher-local",
+        alias="MQTT_DISPATCHER_PRODUCER_ID",
+    )
+    mqtt_dispatcher_username: str | None = Field(
+        default=None,
+        alias="MQTT_DISPATCHER_USERNAME",
+    )
+    mqtt_dispatcher_password: str | None = Field(
+        default=None,
+        alias="MQTT_DISPATCHER_PASSWORD",
+    )
+    mqtt_command_ack_timeout_seconds: int = Field(
+        default=10,
+        alias="MQTT_COMMAND_ACK_TIMEOUT_SECONDS",
+        gt=0,
+    )
+    mqtt_command_max_retries: int = Field(
+        default=3,
+        alias="MQTT_COMMAND_MAX_RETRIES",
+        ge=0,
+    )
+    local_hardware_control_enabled: bool = Field(
+        default=False,
+        alias="LOCAL_HARDWARE_CONTROL_ENABLED",
+    )
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[2] / ".env",
         extra="ignore",

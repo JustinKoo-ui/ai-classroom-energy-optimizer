@@ -22,3 +22,6 @@ cv_service/diagnostics/
 Thumbs.db
 
 .env*
+firmware/esp32/include/secrets.h
+firmware/esp32/.pio/
+infra/mosquitto/password_file

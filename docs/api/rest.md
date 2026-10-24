@@ -62,6 +62,9 @@ Error response:
 | GET | `/classrooms/{classroom_id}` | viewer | Classroom configuration |
 | PATCH | `/classrooms/{classroom_id}` | admin | Update non-policy metadata |
 | GET | `/classrooms/{classroom_id}/state` | viewer | Freshness-aware dashboard snapshot |
+| GET | `/api/v1/classrooms/{classroom_id}/telemetry/latest` | local demo only | Latest persisted environment sensor values |
+| GET | `/api/v1/classrooms/{classroom_id}/environment-analysis` | local demo only | Rule-based analysis of stored environment readings |
+| GET | `/api/v1/classrooms/{classroom_id}/occupancy/current` | local demo only | Latest camera occupancy observation with freshness |
 
 `GET /classrooms/{id}/state` is the initial source for a dashboard and returns:
 
@@ -86,6 +89,126 @@ Error response:
   "latest_prediction": null,
   "active_overrides": [],
   "computed_at": "2026-08-14T03:30:02Z"
+}
+```
+
+### Local environment-analysis demo
+
+`GET /api/v1/classrooms/{id}/environment-analysis` aggregates environment telemetry
+stored in PostgreSQL during the preceding 24 hours. It reports the reading
+count, latest value, arithmetic average, range, and change between the latest
+two readings for temperature, humidity, and illuminance. A reading is fresh
+when its timestamp is no more than 30 seconds old.
+
+The endpoint produces transparent `threshold_rules_v1` observations against
+the documented occupied temperature target and lighting target. It returns
+24-hour aggregates (latest, average, range, and recent change/trend) for
+temperature, humidity, and illuminance, plus deterministic threshold findings.
+It does not call an AI provider, generate natural-language reports, or issue
+appliance commands. Fewer than three readings produce an `insufficient_data`
+status.
+
+Until OIDC/JWT classroom authorization is implemented, this endpoint rejects
+non-loopback clients with `403 Forbidden`; it is for a local development
+browser only and must not be exposed through a public deployment.
+
+### Latest local sensor telemetry
+
+`GET /api/v1/classrooms/{id}/telemetry/latest` returns the latest persisted
+DHT22 temperature/humidity, light sensor reading and PIR motion bit. It reports
+`illuminance_adc` for schema `2.0` senders and `illuminance_lux` only for
+calibrated schema `1.0` senders. The LM393 ADC count is not converted to lux.
+`freshness` becomes `stale` 15 seconds after the reading timestamp. PIR motion
+is not an occupancy count and must not be interpreted as vacancy.
+
+The dashboard polls this endpoint every five seconds for its temperature,
+humidity and light cards. This is near-real-time REST polling, not a WebSocket.
+The endpoint is loopback-only during local development.
+
+### Latest camera occupancy
+
+`GET /api/v1/classrooms/{id}/occupancy/current` returns the latest validated
+aggregate camera count. It returns a count (including zero) only while the
+observation is no more than 15 seconds old. Once stale, or before any
+observation exists, it returns `status: "unknown"`, `count: null`, and
+`confidence: null`; the last `observed_at` is retained when available.
+Non-loopback requests receive `403` until classroom authentication and
+authorization are implemented. A fresh zero is `possibly_vacant`, not
+`vacant_confirmed`; vacancy confirmation remains subject to the policy grace
+period and does not come from this display endpoint.
+
+The dashboard polls this route only when
+`NEXT_PUBLIC_USE_LIVE_OCCUPANCY=true`. Other dashboard cards remain on their
+existing demo/live paths.
+
+```json
+{
+  "status": "occupied",
+  "count": 2,
+  "confidence": 0.94,
+  "observed_at": "2026-10-03T13:00:00Z",
+  "freshness": "fresh"
+}
+```
+
+Example response from the ESP32 schema `2.0` sender:
+
+```json
+{
+  "classroom_id": "26e97d46-7a34-4439-922a-83684bda557d",
+  "temperature_c": 26.4,
+  "relative_humidity_pct": 66.0,
+  "illuminance_lux": null,
+  "illuminance_adc": 2048,
+  "motion_detected": true,
+  "observed_at": "2026-10-03T13:00:00Z",
+  "freshness": "fresh"
+}
+```
+
+Example response:
+
+```json
+{
+  "classroom_id": "26e97d46-7a34-4439-922a-83684bda557d",
+  "analysis_status": "ready",
+  "freshness": "fresh",
+  "analysis_method": "threshold_rules_v1",
+  "reading_count": 240,
+  "window_start": "2026-08-13T03:30:02Z",
+  "analyzed_at": "2026-08-14T03:30:02Z",
+  "latest_observed_at": "2026-08-14T03:30:00Z",
+  "temperature_c": {
+    "latest": 26.4,
+    "average": 27.1,
+    "minimum": 25.8,
+    "maximum": 28.2,
+    "recent_change": 0.2,
+    "trend": "rising"
+  },
+  "relative_humidity_pct": {
+    "latest": 66.0,
+    "average": 64.5,
+    "minimum": 60.0,
+    "maximum": 69.0,
+    "recent_change": 0.5,
+    "trend": "rising"
+  },
+  "illuminance_lux": {
+    "latest": 240.0,
+    "average": 250.0,
+    "minimum": 220.0,
+    "maximum": 280.0,
+    "recent_change": -10.0,
+    "trend": "falling"
+  },
+  "insights": [
+    {
+      "level": "caution",
+      "code": "temperature_above_target_band",
+      "message": "Stored temperature readings averaged 27.1 °C, above the occupied comfort target band of 25.5–26.5 °C. Occupancy is not included in this analysis; review room conditions before taking action."
+    }
+  ]
 }
 ```
 
@@ -130,6 +253,34 @@ Response (`202` when policy evaluation has been accepted for processing, or
 An allowed decision is not an applied command. Clients follow the command using
 `GET /commands/{id}`. The dashboard refreshes classroom state by polling its
 REST endpoint; WebSocket delivery is deferred.
+
+### Local ESP32 relay prototype
+
+These local endpoints are a localhost-only integration fixture, not the
+production REST API. They are available only when
+`LOCAL_HARDWARE_CONTROL_ENABLED=true`; requests from non-loopback clients are
+rejected. Until user authentication is implemented, the backend records the
+seeded local demo operator as the actor. Do not expose this API or its broker
+to a network.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/classrooms/{classroom_id}/devices` | Latest ESP32-reported relay states and pending command IDs |
+| POST | `/api/v1/devices/{device_id}/commands` | Policy-evaluate one `set_power` or `set_mode` request |
+| GET | `/api/v1/commands/{command_id}` | Poll the outbox/acknowledgement status |
+
+The local UI sends `set_power` with `{ "on": true|false }` or `set_mode` with
+`{ "mode": "auto"|"manual" }`. Power requests require the latest reported
+mode to be Manual; Auto mode leaves the original sensor rules in control. An
+ON request is denied if the device is offline/faulted, PIR state is
+missing/stale, or PIR reports no motion. The ESP32 repeats the PIR check
+because motion may change after policy evaluation. A denied PIR command does
+not leave a manual ON request latched. The UI keeps the last reported state
+until an `applied` acknowledgement arrives.
+
+The seeded relay capabilities include only `set_power` and `set_mode`.
+Temperature setpoint, fan speed, brightness, power, and energy are
+unsupported/simulated and are never sent to the ESP32.
 
 ## Manual overrides
 

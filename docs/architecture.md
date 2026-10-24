@@ -32,6 +32,22 @@ flowchart LR
     Predict -->|"probability only"| API
 ```
 
+## Current local environment-analysis slice
+
+The runnable local prototype implements environment telemetry and a
+localhost-only relay command slice. The backend validates MQTT envelopes,
+persists deduplicated readings, device state and command acknowledgements in
+PostgreSQL, and serves REST polling endpoints. Manual requests create an
+immutable policy decision and command/outbox row in one transaction; a
+separate MQTT dispatcher publishes only persisted allowed commands. The ESP32
+validates the command, applies active-LOW digital outputs, and reports the
+resulting state. The dashboard never connects to MQTT. The LM393 reading is
+raw ADC counts, not calibrated lux; PIR reports motion, not an occupant count.
+The local hardware API is disabled by default and localhost-only; production
+authentication/authorization, TLS, hardware interlocks and deployment
+hardening are not implemented. Power/energy, occupancy counts and variable
+actuator controls remain unsupported/demo data.
+
 ## 3. Safety-critical command path
 
 ```mermaid

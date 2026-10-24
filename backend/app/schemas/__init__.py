@@ -25,6 +25,7 @@ from .common import (
     SystemEvent,
     UserProfile,
 )
+from .environment_analysis import EnvironmentAnalysis, EnvironmentInsight, EnvironmentMetricSummary
 from .mqtt import (
     ApprovedCommandPayload,
     AvailabilityPayload,
@@ -56,6 +57,9 @@ __all__ = [
     "DeviceType",
     "EnergyUpdate",
     "EnvironmentState",
+    "EnvironmentAnalysis",
+    "EnvironmentInsight",
+    "EnvironmentMetricSummary",
     "EnvironmentTelemetryPayload",
     "Freshness",
     "ManualOverride",

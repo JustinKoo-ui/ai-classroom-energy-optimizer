@@ -1,0 +1,25 @@
+user aceo-esp32-room-a204
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/telemetry/environment
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/gateway/esp32-room-a204/status
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/d7958a13-4c75-47e8-8b5e-4f4e00000027/set
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/d7958a13-4c75-47e8-8b5e-4f4e00000012/set
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/d7958a13-4c75-47e8-8b5e-4f4e00000014/set
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/device/d7958a13-4c75-47e8-8b5e-4f4e00000027/state
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/device/d7958a13-4c75-47e8-8b5e-4f4e00000012/state
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/device/d7958a13-4c75-47e8-8b5e-4f4e00000014/state
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/d7958a13-4c75-47e8-8b5e-4f4e00000027/ack
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/d7958a13-4c75-47e8-8b5e-4f4e00000012/ack
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/d7958a13-4c75-47e8-8b5e-4f4e00000014/ack
+
+user aceo-cv-worker
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/occupancy/observation
+
+user aceo-backend-ingestion
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/telemetry/environment
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/device/+/state
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/+/ack
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/gateway/+/status
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/occupancy/observation
+
+user aceo-backend-dispatcher
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/+/set

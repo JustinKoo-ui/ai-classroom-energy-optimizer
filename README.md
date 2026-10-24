@@ -4,9 +4,11 @@ Project for monitoring classroom occupancy, comfort and
 electrical energy, then issuing appliance commands through a deterministic
 control policy.
 
-This repository currently contains the initial architecture, protocol
-contracts, database schema and shared types. It intentionally does not contain
-a complete dashboard or device-control implementation yet.
+This repository contains the architecture, protocol contracts, database
+schema, shared types, a local environment-telemetry demo, and a localhost-only
+ESP32 ON/OFF control prototype. The prototype is for isolated low-voltage
+testing only; it is not production-authorized and does not support variable
+fan speed, brightness, temperature setpoints, or measured power/energy.
 
 ## Core invariant
 
@@ -27,7 +29,7 @@ ai-classroom-energy-optimizer/
 |   |-- app/schemas/         Pydantic boundary contracts
 |   |-- app/services/        Policy, command, scheduling and analytics logic
 |   `-- app/workers/         MQTT ingestion and scheduled background work
-|-- frontend/                React application (contracts only at this stage)
+|-- frontend/                React dashboard with local-only relay control
 |   `-- src/types/           TypeScript wire contracts
 |-- cv_service/              Roboflow detection + in-memory ByteTrack worker
 |-- ml/                      Leave-within-60-seconds model training/inference
@@ -58,9 +60,10 @@ Empty source directories are intentional extension points for later increments.
 
 The repository can currently be deployed as a public **demo dashboard**. The
 frontend uses `MockDashboardService` by default, so the deployed link will show
-simulated classroom readings and will not control real appliances. This is the
-recommended first deployment because the backend routes, database migrations
-and MQTT dispatcher are not implemented yet.
+simulated classroom readings and device controls. Hardware commands are
+available only from localhost through the local backend and are never sent by
+the Cloudflare-hosted dashboard. Production classroom authorization and
+deployment hardening remain unimplemented.
 
 ### Deploy to Cloudflare Workers
 
@@ -87,7 +90,7 @@ prefix are bundled into browser JavaScript and are public.
 
 ### Connect a deployed backend later
 
-When the FastAPI API is implemented and hosted over HTTPS, configure these
+When the full FastAPI API is implemented and hosted over HTTPS, configure these
 frontend build-time variables:
 
 ```text
@@ -123,7 +126,9 @@ current operating system.
 
 1. Infrastructure, database migrations and simulated MQTT devices.
 2. Telemetry ingestion, current room state and REST-polled dashboard updates.
-3. Manual control through the deterministic policy and acknowledgement loop.
+3. Local manual control through the deterministic policy and acknowledgement
+   loop (implemented for relay ON/OFF; production authorization remains future
+   work).
 4. Occupancy detection/tracking and privacy validation.
 5. Comfort automation, vacancy handling and schedules.
 6. Prediction recommendations and energy-savings analytics.
@@ -131,16 +136,30 @@ current operating system.
 
 ### Local MQTT ingestion demo
 
-Start the local services, then start the FastAPI ingestion worker:
+For ESP32 hardware control, first follow the broker credential, firmware, and
+low-voltage safety setup in [firmware/esp32/README.md](firmware/esp32/README.md).
+The local broker uses separate ESP32, ingestion, and dispatcher accounts; do
+not start the broker without its ignored local password file. Keep
+`LOCAL_HARDWARE_CONTROL_ENABLED=false` unless testing the localhost prototype
+on an isolated, low-voltage load.
+
+On a fresh database, Compose applies the schema. The migration adds raw LM393
+ADC and PIR fields to an existing local database:
 
 ```powershell
 docker compose up -d
+Get-Content database\migrations\002_environment_raw_adc.sql |
+  docker exec -i aceo-postgres psql -U aceo -d aceo
 Set-Location backend
-python -m uvicorn app.main:app --reload --port 8000
+if (-not (Test-Path .env)) { Copy-Item ..\.env.example .env }
+uv sync --locked --extra dev
+uv run python scripts/seed_local_classroom.py
+uv run python -m uvicorn app.main:app --reload --port 8000
 ```
 
-In another terminal, publish valid environment telemetry continuously. Replace
-the IDs if you are using different seeded site and classroom records:
+For a synthetic-data test without the ESP32, publish generated readings from a
+second terminal. Do not run this alongside the physical board, because the
+latest synthetic reading can overwrite the dashboard's sensor values:
 
 ```powershell
 Set-Location backend
@@ -149,10 +168,33 @@ python scripts/simulate_environment.py `
   --classroom-id 26e97d46-7a34-4439-922a-83684bda557d
 ```
 
-Verify that the worker is connected and rows are being persisted:
+Start the frontend with `pnpm dev` from `frontend`. Dashboard sections still
+use mock data except the temperature, humidity and light cards, which poll the
+latest stored sensor reading. To enable physical ON/OFF controls on localhost
+only, set `LOCAL_HARDWARE_CONTROL_ENABLED=true` in `backend/.env` and
+`NEXT_PUBLIC_ENABLE_HARDWARE_CONTROLS=true` in `frontend/.env.local`. The
+frontend disables hardware controls on every non-local hostname. Set
+`NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` and
+`NEXT_PUBLIC_CLASSROOM_ID=26e97d46-7a34-4439-922a-83684bda557d` in
+`frontend/.env.local`:
+
+```text
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+NEXT_PUBLIC_CLASSROOM_ID=26e97d46-7a34-4439-922a-83684bda557d
+NEXT_PUBLIC_DASHBOARD_POLL_INTERVAL_MS=5000
+NEXT_PUBLIC_ENABLE_HARDWARE_CONTROLS=true
+```
+
+Use the firmware's Auto/Manual and digital ON/OFF controls only. The
+fan-speed, brightness, AC setpoint, power, and energy panels are explicitly
+simulated/unsupported. The loopback-only control API and plaintext MQTT broker
+must not be exposed publicly.
+
+Verify that the worker is connected, readings are stored and live telemetry responds:
 
 ```powershell
 Invoke-WebRequest http://localhost:8000/health/ready
 docker exec aceo-postgres psql -U aceo -d aceo -c `
   "SELECT sensor_id, temperature_c, received_at FROM environment_readings ORDER BY received_at DESC LIMIT 10;"
+Invoke-WebRequest http://localhost:8000/api/v1/classrooms/26e97d46-7a34-4439-922a-83684bda557d/telemetry/latest
 ```

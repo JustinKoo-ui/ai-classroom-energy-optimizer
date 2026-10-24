@@ -26,6 +26,8 @@ services:
       - "1883:1883"
     volumes:
       - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./infra/mosquitto/acl:/mosquitto/config/acl:ro
+      - ./infra/mosquitto/password_file:/mosquitto/config/password_file:ro
       - aceo-mqtt-data:/mosquitto/data
       - aceo-mqtt-log:/mosquitto/log
 
