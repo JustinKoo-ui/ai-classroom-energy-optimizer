@@ -1,5 +1,10 @@
 # Complete Software Architecture
 
+The additive [runtime/energy/analyst module](analytics.md) observes existing
+firmware state in a separate bounded persistence transaction. It has no command
+or automation mutation path. Numerical estimates work without an LLM; optional
+commentary receives only bounded aggregate summaries.
+
 ## 1. Architectural style
 
 The first production shape is a **modular monolith plus two isolated compute
@@ -34,19 +39,43 @@ flowchart LR
 
 ## Current local environment-analysis slice
 
-The runnable local prototype implements environment telemetry and a
-localhost-only relay command slice. The backend validates MQTT envelopes,
-persists deduplicated readings, device state and command acknowledgements in
-PostgreSQL, and serves REST polling endpoints. Manual requests create an
-immutable policy decision and command/outbox row in one transaction; a
-separate MQTT dispatcher publishes only persisted allowed commands. The ESP32
-validates the command, applies active-LOW digital outputs, and reports the
-resulting state. The dashboard never connects to MQTT. The LM393 reading is
-raw ADC counts, not calibrated lux; PIR reports motion, not an occupant count.
-The local hardware API is disabled by default and localhost-only; production
-authentication/authorization, TLS, hardware interlocks and deployment
-hardening are not implemented. Power/energy, occupancy counts and variable
-actuator controls remain unsupported/demo data.
+The runnable local prototype implements environment telemetry, camera
+occupancy ingestion and a relay command slice with local access or optional
+authenticated Cloudflare access. The backend
+validates MQTT envelopes, persists deduplicated readings, device state and
+command acknowledgements in PostgreSQL, and serves REST polling endpoints.
+Manual and occupancy automation decisions create immutable policy decisions
+and command/outbox rows; a separate MQTT dispatcher publishes only persisted
+allowed commands. The ESP32 validates the command, applies per-device digital
+output polarity, and reports the logical state. Fan, yellow lighting, and AC
+are configured active HIGH: logical OFF drives LOW and logical ON drives HIGH.
+Reported state is not physical output feedback. The dashboard
+never connects to MQTT. The LM393 reading is raw ADC counts, not calibrated
+lux; PIR reports motion, not an occupant count.
+
+The local automation policy requests fan ON immediately for fresh occupancy
+>= 1. Automatic lighting requires fresh PIR motion first, then fresh valid
+LDR ADC > 1000. No motion or ADC <= 1000 requests OFF, regardless of camera
+count or an active scanning window. AC requires
+continuous fresh occupancy >= 3 for at least 5 seconds and a fresh valid temperature
+>=26°C OR relative humidity >=65%; loss of qualification requests AC OFF.
+With no confirmed occupants, a fresh PIR rising event starts a 20-second
+camera-scanning window. Any detected person cancels the timeout and enters
+normal occupancy control. Lighting always follows the PIR/LDR AND gates; the
+fan and AC remain OFF without confirmed occupancy. Sustained PIR HIGH
+cannot restart the scan, and unknown occupancy stays
+distinct from a valid zero. No additional vacancy grace applies to this flow.
+Urgency is a fixed five-minute, policy-approved override. Per-device
+Manual mode persists until explicitly switched to Auto. These settings apply
+to the low-voltage prototype. The hardware API is disabled by default and
+accepts direct loopback requests. An optional private bridge additionally
+accepts allowlisted Cloudflare operators, after the Worker verifies the Access
+JWT signature, issuer and audience. HTTPS terminates at Cloudflare; Workers
+VPC and a QUIC tunnel carry requests to the private backend. The operator
+email is recorded with each policy decision. This is a single-classroom
+prototype, without production equipment interlocks or general classroom RBAC.
+Power/energy measurements and variable actuator controls remain unsupported
+or demo data.
 
 ## 3. Safety-critical command path
 
@@ -137,8 +166,12 @@ it does not bypass hard electrical, capability or authorization limits.
 - The CV worker publishes count, confidence, entry/exit deltas and observation
   timestamp. Track IDs, frames and crops are not persisted by default.
 - No face detection, recognition or biometric templates are permitted.
-- Camera frames stay on the CV host unless an explicit, documented diagnostic
-  mode is enabled. Diagnostic retention must have a short TTL and access audit.
+- Camera frames stay on the CV host by default. The optional, explicitly enabled
+  live preview decodes the configured RTSP source on the backend host and sends
+  transient JPEGs to a local viewer or a Cloudflare Access authenticated viewer
+  through the private bridge. It retains only the latest frame in memory, stops
+  decoding after viewers become idle, and does not record frames, audio or video.
+  Any separate diagnostic retention must have a short TTL and access audit.
 - If the CV feed is stale, occupancy becomes `unknown`, not `vacant`.
 - Vacancy-triggered shutoff requires continuous, fresh zero-count observations
   for the configured grace period.

@@ -1,24 +1,59 @@
 "use client";
 
+import { useEffect, useState, useSyncExternalStore } from "react";
 import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
 import { AIInsightPanel } from "@/src/components/AIInsightPanel";
+import { CameraPreview } from "@/src/components/CameraPreview";
 import { DeviceControlCard } from "@/src/components/DeviceControlCard";
 import { EnergyCharts } from "@/src/components/EnergyCharts";
+import { EnvironmentalAnalyst } from "@/src/components/EnvironmentalAnalyst";
 import { MetricCard } from "@/src/components/MetricCard";
 import { useDashboard } from "@/src/hooks/useDashboard";
 import { useLocalHardwareControls } from "@/src/hooks/useLocalHardwareControls";
 import { useEnvironmentTelemetry } from "@/src/hooks/useEnvironmentTelemetry";
 import { useOccupancy } from "@/src/hooks/useOccupancy";
-import type { DashboardDevice, DashboardMetric } from "@/src/types/dashboard";
-import type { LocalDeviceControlState } from "@/src/types/device-control";
+import { withHardwareState } from "@/src/api/hardware-control-service";
+import type { DashboardMetric } from "@/src/types/dashboard";
+
+const navigationItems = [
+  { id: "overview", label: "Overview" },
+  { id: "camera", label: "Camera" },
+  { id: "devices", label: "Devices" },
+  { id: "analytics", label: "Analytics" },
+  { id: "ai-insights", label: "AI insights" },
+  { id: "environmental-analyst", label: "Environmental analyst" },
+] as const;
+
+function subscribeToHashChange(onChange: () => void) {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+}
+
+function getActiveSection() {
+  const sectionId = window.location.hash.slice(1);
+  return navigationItems.find((item) => item.id === sectionId)?.id ?? "overview";
+}
 
 export function Dashboard() {
+  const activeSection = useSyncExternalStore(subscribeToHashChange, getActiveSection, () => "overview");
   const { data, loading, error, requestControl, setScenario } = useDashboard();
   const environment = useEnvironmentTelemetry();
   const occupancy = useOccupancy(data?.classroom_id);
   const hardware = useLocalHardwareControls(data?.classroom_id);
   const sensorFresh = isEnvironmentTelemetryFresh(environment.telemetry);
+  const [clockNow, setClockNow] = useState<number | null>(null);
+  const urgencyActive = hardware.urgency?.status === "monitoring";
+  const urgencySecondsRemaining =
+    urgencyActive && hardware.urgency?.expires_at && clockNow !== null
+      ? Math.max(0, Math.ceil((Date.parse(hardware.urgency.expires_at) - clockNow) / 1000))
+      : null;
+
+  useEffect(() => {
+    if (!urgencyActive) return;
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [urgencyActive]);
 
   if (loading && !data) {
     return (
@@ -44,7 +79,7 @@ export function Dashboard() {
   }
 
   const displayedDevices = hardware.enabled
-    ? data.devices.map((device) => withHardwareState(device, hardware.deviceStates?.devices))
+    ? data.devices.map((device) => withHardwareState(device, hardware.deviceStates?.devices, hardware.error, hardware.pendingDeviceIds))
     : data.devices;
   const handleDeviceControl = hardware.enabled ? hardware.requestControl : requestControl;
 
@@ -56,13 +91,19 @@ export function Dashboard() {
           <span>Nexergy</span>
         </a>
         <nav aria-label="Primary navigation">
-          <a className="is-active" href="#overview">Overview</a>
-          <a href="#devices">Devices</a>
-          <a href="#analytics">Analytics</a>
-          <a href="#ai-insights">AI insights</a>
+          {navigationItems.map((item) => (
+            <a
+              key={item.id}
+              className={activeSection === item.id ? "is-active" : undefined}
+              href={`#${item.id}`}
+              aria-current={activeSection === item.id ? "location" : undefined}
+            >
+              {item.label}
+            </a>
+          ))}
         </nav>
         <div className="sidebar__foot">
-          <span>{hardware.enabled ? "Local control" : "Prototype mode"}</span>
+          <span>{hardware.mode === "remote" ? "Cloudflare control" : hardware.enabled ? "Local control" : "Prototype mode"}</span>
           <strong>{hardware.enabled ? "Policy gate active" : "No hardware path"}</strong>
           <small>AI advisory only</small>
         </div>
@@ -75,6 +116,23 @@ export function Dashboard() {
             <h1>{data.classroom_name}</h1>
           </div>
           <div className="topbar__actions">
+            {hardware.enabled && (
+              <div className="urgency-control">
+                {hardware.canActivateUrgency && <button
+                  className="urgency-control__button"
+                  type="button"
+                  disabled={urgencyActive}
+                  onClick={() => void hardware.activateUrgency()}
+                >
+                  {urgencyActive ? "Urgency monitoring" : "Activate urgency"}
+                </button>}
+                <span role="status" aria-live="polite">
+                  {urgencyActive && urgencySecondsRemaining !== null
+                    ? `${formatCountdown(urgencySecondsRemaining)} remaining`
+                    : urgencyStatusLabel(hardware.urgency?.status)}
+                </span>
+              </div>
+            )}
             <label className="scenario-picker">
               <span>Demo state</span>
               <select defaultValue="live" onChange={(event) => setScenario(event.target.value as "live" | "device_offline" | "connection_loss")}>
@@ -126,6 +184,8 @@ export function Dashboard() {
           </div>
         </section>
 
+        <CameraPreview key={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
+
         <div className="operations-grid">
           <section id="devices" aria-labelledby="device-title">
             <div className="section-heading">
@@ -142,13 +202,19 @@ export function Dashboard() {
             <div className="connection-banner" role="status">
               {hardware.enabled ? (
                 <div>
-                  <strong>Local ESP32 controls · digital ON/OFF only</strong>
-                  <span>Auto/Manual and relay state come from the controller. Fan speed, brightness, AC setpoint, and wattage are unsupported/demo-only.</span>
+                  <strong>{hardware.mode === "remote" ? "Authenticated Cloudflare ESP32 controls" : "Local ESP32 controls"} · digital ON/OFF only</strong>
+                  <span>
+                    Auto/Manual and relay state come from the controller. Commands wait for ESP32 acknowledgement.
+                    PIR motion: {sensorFresh && environment.telemetry?.motion_detected !== null
+                      ? environment.telemetry?.motion_detected ? "detected" : "not detected"
+                      : "unknown"}.
+                    Fan speed, brightness, AC setpoint, and wattage are unsupported/demo-only.
+                  </span>
                 </div>
               ) : (
                 <div>
                   <strong>Demo controls · no hardware commands are sent</strong>
-                  <span>Simulated controls on this page do not operate relays. Enable hardware controls only from localhost after configuring the local backend.</span>
+                  <span>Simulated controls on this page do not operate relays. Hardware controls require the configured local connection or authenticated Cloudflare control connection.</span>
                 </div>
               )}
             </div>
@@ -156,11 +222,11 @@ export function Dashboard() {
               {displayedDevices.map((device) => <DeviceControlCard key={device.id} device={device} onRequest={handleDeviceControl} compact />)}
             </div>
           </section>
-          <section aria-labelledby="ai-title">
+          <section id="ai-insights" aria-labelledby="ai-title">
             <div className="section-heading section-heading--compact">
               <div><p className="eyebrow">Anonymous tracking</p><h2 id="ai-title">AI insights</h2></div>
             </div>
-            <AIInsightPanel insight={data.ai} />
+            <AIInsightPanel live={occupancy} />
           </section>
         </div>
 
@@ -172,6 +238,8 @@ export function Dashboard() {
           <EnergyCharts charts={data.charts} />
         </section>
 
+        <EnvironmentalAnalyst classroomId={data.classroom_id} />
+
         <footer className="dashboard-footer">
           <span>Nexergy · Classroom Energy Intelligence</span>
           <span>AI recommends. Deterministic policy decides. Devices acknowledge.</span>
@@ -179,6 +247,25 @@ export function Dashboard() {
       </main>
     </div>
   );
+}
+
+function formatCountdown(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function urgencyStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case "completed_no_presence":
+      return "Completed · no person detected";
+    case "completed_presence":
+      return "Completed · returning to policy";
+    case "completed_camera_unknown":
+      return "Completed · camera state unknown";
+    default:
+      return "Urgency inactive";
+  }
 }
 
 function withLiveOccupancyReading(
@@ -227,40 +314,6 @@ function withLiveOccupancyReading(
       : "No camera reading yet",
     status,
     updated_at: observedAt ?? metric.updated_at,
-  };
-}
-
-function withHardwareState(
-  device: DashboardDevice,
-  hardwareDevices: LocalDeviceControlState[] | undefined,
-): DashboardDevice {
-  const reported = hardwareDevices?.find((candidate) => candidate.type === device.kind);
-  const isOn = reported?.reported_state.on;
-  const mode = reported?.reported_state.mode;
-  const connected =
-    reported?.operational_status === "online" &&
-    reported.freshness === "fresh" &&
-    reported.fault_codes.length === 0;
-  const pending = reported?.pending_command_id !== null && reported?.pending_command_id !== undefined;
-
-  return {
-    ...device,
-    id: reported?.device_id ?? device.id,
-    is_on: typeof isOn === "boolean" ? isOn : false,
-    mode: mode === "manual" ? "manual" as const : "auto" as const,
-    connected,
-    pending,
-    active_power_w: 0,
-    status_label: pending
-      ? "Awaiting ESP32 acknowledgement"
-      : connected
-        ? "Reported by ESP32"
-        : reported?.fault_codes.length
-          ? "Device fault"
-          : reported?.freshness === "stale"
-            ? "Reported state stale"
-            : "ESP32 unavailable",
-    hardware_backed: true,
   };
 }
 

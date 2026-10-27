@@ -1,11 +1,39 @@
 # ESP32 classroom prototype
 
-The ESP32 DevKit V1 firmware preserves the supplied DHT22/PIR/LDR automation
-and active-LOW relay logic. It publishes environment telemetry every two
-seconds and subscribes to policy-approved ON/OFF and Auto/Manual commands for
-the fan, light, and AC outputs. PIR LOW always forces every output OFF; a
-blocked manual ON is not remembered. PIR is motion detection, never an
-occupant count.
+The ESP32 DevKit V1 firmware preserves the supplied DHT22/PIR/LDR sensor
+acquisition and MQTT telemetry path. Output polarity is configured per device
+in `include/relay_config.h`: fan, AC, and the yellow lighting output are
+active HIGH (logical OFF drives LOW; logical ON drives HIGH). It
+samples sensors every two seconds, publishes fresh snapshots when the previous
+MQTT batch is acknowledged, and subscribes to
+policy-approved ON/OFF and Auto/Manual commands for the fan, light, and AC
+outputs. The backend deterministic policy is the only automation decision
+maker; the ESP32 validates and applies commands, reports outputs, and does not
+let a LOW PIR sample override occupancy, urgency, or manual state. PIR is
+motion detection, never an occupant count.
+
+For the localhost low-voltage prototype, the backend applies these configured
+rules: fresh occupancy >= 1 immediately requests fan ON. Automatic lighting
+requires fresh PIR motion first, then a fresh valid `LDR ADC > 1000`, independent
+of the camera count. No motion always requests light OFF, even at ADC 4095.
+During motion, ADC > 1000 requests ON and ADC <= 1000 requests OFF. AC requires
+continuous occupancy >= 3 for at least 5 seconds and either fresh
+valid temperature >=26°C or humidity >=65%; loss of qualification requests AC
+OFF. Camera observations older than 15 seconds become unknown. With no
+confirmed occupant (valid zero or unknown), a fresh PIR rising motion event
+starts a non-blocking 20-second camera-scanning window. Any detected
+person cancels the scan timeout. Lighting follows the same PIR-then-LDR gates
+during scanning, handoff and normal operation; no timer forces it ON.
+The fan and AC remain OFF without confirmed occupants.
+Sustained PIR HIGH does not restart a scan; LOW re-arms
+the next event. Per-device Manual mode persists until explicitly switched back
+to Auto. These decisions live in the backend, not this firmware.
+
+Urgency is submitted through the localhost REST API and the same policy,
+outbox, MQTT dispatcher, and ESP32 command path. It commands all three outputs
+on for a fixed five minutes. At expiry, a fresh zero count commands all
+outputs off; a fresh nonzero count returns control to the previous per-device
+mode. Unknown occupancy is not treated as confirmed absence.
 
 The local hardware API is disabled by default, loopback-only, and intended for
 an isolated, low-voltage LED/relay test. Do not connect mains-powered
@@ -69,6 +97,8 @@ does not connect to Wi-Fi, publish MQTT, or require `include\secrets.h`.
    docker compose up -d
    Get-Content database\migrations\002_environment_raw_adc.sql |
      docker exec -i aceo-postgres psql -U aceo -d aceo
+   Get-Content database\migrations\003_occupancy_automation_state.sql |
+     docker exec -i aceo-postgres psql -U aceo -d aceo
    Set-Location backend
    if (-not (Test-Path .env)) { Copy-Item ..\.env.example .env }
    uv sync --locked --extra dev
@@ -106,8 +136,9 @@ does not connect to Wi-Fi, publish MQTT, or require `include\secrets.h`.
    ACS712 OUT voltage across its full range before connecting it to GPIO 34;
    many ACS712 modules are powered at 5 V and can output above 3.3 V. Add a
    properly designed divider/conditioning circuit if needed. Allow the PIR to
-   stabilize for 30 seconds. Verify the output polarity on LEDs or an isolated
-   low-voltage test load; the sketch uses active-LOW outputs.
+   stabilize for 30 seconds. Verify each output's polarity on LEDs or an isolated
+   low-voltage test load. The yellow output uses active HIGH
+   (logical ON = GPIO 12 HIGH, OFF = LOW), as do fan and AC.
 5. From this directory, build and upload with PlatformIO:
 
    ```powershell
@@ -144,14 +175,115 @@ does not connect to Wi-Fi, publish MQTT, or require `include\secrets.h`.
    1883, all three broker users were created, and the firmware/backend
    passwords match the local password file.
 
+## Yellow light behaves opposite to the dashboard
+
+The backend Auto rule is `fresh PIR motion AND fresh valid LDR ADC > 1000`.
+Without motion, lighting is requested OFF at every ADC value. With motion,
+ADC 1000 or below requests OFF and ADC 1001 or above requests ON. Do not reverse
+this comparison to compensate for an electrically inverted output.
+
+The yellow LED output is configured active HIGH in `include/relay_config.h`:
+logical OFF drives GPIO 12 LOW and logical ON drives it HIGH. The same
+per-device mapping is used for boot OFF and every approved command. Fan and
+AC use active HIGH.
+Restart the backend to load a changed LDR threshold. If changing the output
+mapping, rebuild and upload the normal `esp32dev` firmware; restarting the
+backend alone does not change the ESP32's output mapping.
+
+After upload, use Manual mode to compare logical ON/OFF with the physical
+yellow light, then return Lighting to Auto and test this table:
+
+| Fresh PIR motion | LDR ADC | Yellow light | GPIO 12 |
+|---|---|---|---|
+| No | Any value, including > 1000 | OFF | LOW |
+| Yes | < 1000 | OFF | LOW |
+| Yes | = 1000 | OFF | LOW |
+| Yes | > 1000 | ON | HIGH |
+
+Stale or invalid motion/LDR data also requests OFF in Auto. Manual mode and
+the five-minute urgency override retain their existing priority.
+Serial diagnostics show logical state, GPIO level, and configured polarity;
+reported MQTT state confirms the commanded state, not physical light feedback.
+
 The local ACL gives the ESP32 only its telemetry/state/ack publishes and its
 three exact command subscriptions. The backend dispatcher alone can publish
 commands; the ingestion user cannot. Commands are QoS 1 and never retained.
 This plaintext broker is for a trusted local development network only. Do not
 expose port 1883 to the public internet or deploy this local control API.
 
+## Commands time out while sensor readings still arrive
+
+The full UUID-based command topics are 130 bytes long. AsyncMqttClient's default
+incoming-topic limit is 128 bytes; it silently discards longer topics before
+the firmware's command callback runs. Telemetry can still publish normally,
+so working sensor readings do not prove that command reception works.
+
+The firmware sets the incoming-topic limit to 191 bytes, matching its 192-byte
+topic buffer including the terminating null. Rebuild and upload the normal
+`esp32dev` firmware after applying this change. Existing timed-out commands
+are not replayed; submit a new request from the dashboard.
+
+Switch Lighting to Manual and wait for the controller's reported mode to
+change before using the power switch. The serial monitor should show
+`Queued MQTT command` followed by `Applied MQTT command` for each request.
+An HTTP 200 from the command-status API only confirms that the status was
+retrieved; an `applied` command status confirms the ESP32 acknowledgement.
+
+## Readings repeatedly become stale
+
+First distinguish a disconnected ESP32 from a slow publication queue. Check
+`http://localhost:8000/health/ready` and the serial monitor: backend MQTT can
+be connected while the board is still disconnected. Compare `MQTT_HOST` in
+the ignored `include/secrets.h` with the computer's current Wi-Fi IPv4 address
+from `ipconfig`. DHCP or switching hotspots can change that address. Update
+the host, rebuild, and upload `esp32dev`; changing the header alone does not
+update firmware already on the board. Reserve the computer's address in the
+router's DHCP settings where available to avoid repeating this problem.
+
+If flashing reports `Wrong boot mode`, close any serial monitor or competing
+uploader, hold BOOT, tap EN/RESET, then release BOOT to enter download mode
+before retrying. Only one process can use the board's serial port at a time.
+After upload, verify that `telemetry/latest` returns a new `observed_at` and
+`freshness: "fresh"`; MQTT connectivity alone does not prove new sensor data.
+
+Sensor acquisition runs every two seconds. The MQTT library sends QoS 1
+publications serially, waiting for broker acknowledgements. Enqueuing a new
+environment reading and three relay states every two seconds without waiting
+can build a growing backlog when delivery is slower than acquisition. Messages
+then arrive with old timestamps even though Wi-Fi and MQTT remain connected.
+
+Routine snapshots are now submitted only after earlier publications have been
+acknowledged. Skipped snapshots are replaced by the next sensor sample rather
+than queued for later delivery. Command acknowledgements and immediate device
+state reports remain independent of this periodic gate. A clean MQTT session
+discards old queued publications after reconnecting.
+
+The serial monitor prints the board's UTC time, MQTT connection state, pending
+publish count and Wi-Fi RSSI. If readings remain stale with this firmware,
+compare board UTC with the computer's UTC and check for connection loss or poor
+Wi-Fi. A rising publication backlog is a delivery problem, not a reason to
+extend safety freshness limits. Environment readings currently expire after
+six seconds for this two-second sampling interval; device states expire after
+fifteen seconds. Rebuild and upload `esp32dev` to use the queue fix.
+
+The normal firmware disables Wi-Fi modem sleep to reduce receive latency for
+this powered controller. This uses more radio power and does not eliminate
+packet loss or interference. If MQTT stays connected but pending publications
+take many seconds to drain, test the board's network path from the computer:
+
+```powershell
+ping.exe -n 20 -w 1000 192.168.50.190
+```
+
+Replace the address with the board's current IP from the serial monitor. If
+there are lost replies or large latency spikes, move the board closer to the
+router and repeat the test. Freshness can remain steady only while new samples
+arrive within the freshness window; missing samples must still become stale.
+
 ## Sensor limitations and electrical safety
 
+- Replace an LDR module damaged by incorrect VCC/GND wiring before validating
+  the 1000 ADC threshold; software cannot repair the damaged hardware.
 - LM393 is a comparator board, not a lux meter. Firmware sends averaged ADC
   counts, and the dashboard labels them as uncalibrated counts. A lux meter is
   needed before converting those readings to lux.

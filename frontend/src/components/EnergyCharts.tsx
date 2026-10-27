@@ -55,11 +55,10 @@ function PowerChart({ points }: { points: TimeSeriesPoint[] }) {
 
 function EnergyMixChart({ items }: { items: ApplianceEnergyDatum[] }) {
   const total = items.reduce((sum, item) => sum + item.value_kwh, 0);
-  let cursor = 0;
-  const segments = items.map((item) => {
-    const start = (cursor / total) * 100;
-    cursor += item.value_kwh;
-    const end = (cursor / total) * 100;
+  const segments = items.map((item, index) => {
+    const preceding = items.slice(0, index).reduce((sum, previous) => sum + previous.value_kwh, 0);
+    const start = total > 0 ? (preceding / total) * 100 : 0;
+    const end = total > 0 ? ((preceding + item.value_kwh) / total) * 100 : 0;
     return `${item.color} ${start}% ${end}%`;
   });
   return (

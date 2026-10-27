@@ -65,3 +65,15 @@ class DeviceCommandStatus(ContractModel):
     reported_state: JsonObject | None
     created_at: UtcDateTime
     updated_at: UtcDateTime
+
+
+class UrgencyStatus(ContractModel):
+    status: Literal[
+        "inactive",
+        "monitoring",
+        "completed_no_presence",
+        "completed_presence",
+        "completed_camera_unknown",
+    ]
+    started_at: UtcDateTime | None
+    expires_at: UtcDateTime | None

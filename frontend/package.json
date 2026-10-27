@@ -12,11 +12,17 @@
     "start": "vinext start",
     "deploy": "vinext-cloudflare deploy",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test:analytics": "node --experimental-strip-types --test tests/analytics-presentation.test.mjs",
+    "test:insights": "node --experimental-strip-types --test tests/occupancy-insights.test.mjs",
+    "test:proxy": "node --experimental-strip-types --test tests/monitoring-proxy.test.mjs",
+    "test:hardware": "node --experimental-strip-types --test tests/hardware-control-service.test.mjs",
+    "test:camera": "node --experimental-strip-types --test tests/camera-preview-service.test.mjs",
     "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   },
   "dependencies": {
     "@vinext/cloudflare": "1.0.0-beta.8",
+    "jose": "^6.2.13",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-loading-skeleton": "3.5.0"

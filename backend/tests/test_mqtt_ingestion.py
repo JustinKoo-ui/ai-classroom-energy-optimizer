@@ -308,7 +308,7 @@ class MqttIngestionTests(IsolatedAsyncioTestCase):
                 "command_id": str(uuid4()),
                 "device_id": str(uuid4()),
                 "status": "rejected",
-                "reason_code": "pir_master_no_motion",
+                "reason_code": "unsupported_command_source",
                 "reported_state": {"on": False, "mode": "auto"},
             },
         }

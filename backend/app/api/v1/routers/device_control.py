@@ -10,6 +10,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.private_bridge import is_private_bridge_request, require_remote_control
 from app.domain.local_hardware import (
     LOCAL_CLASSROOM_ID,
     LOCAL_RELAY_DEVICE_IDS,
@@ -21,17 +22,28 @@ from app.schemas.device_control import (
     DeviceControlStateList,
     ManualCommandRequest,
     ManualCommandResponse,
+    UrgencyStatus,
 )
 from app.services.device_control import (
     DeviceNotFoundError,
     IdempotencyConflictError,
     submit_manual_command,
 )
+from app.services.occupancy_automation import (
+    UrgencyUnavailableError,
+    get_local_urgency_status,
+    start_local_urgency,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["local device control"])
 
 
 def _require_loopback(request: Request) -> None:
+    if is_private_bridge_request(request):
+        require_remote_control(request)
+        if not getattr(request.app.state, "local_hardware_control_enabled", False):
+            raise HTTPException(status_code=404, detail="Local hardware control is disabled.")
+        return
     if not getattr(request.app.state, "local_hardware_control_enabled", False):
         raise HTTPException(status_code=404, detail="Local hardware control is disabled.")
     client_host = request.client.host if request.client is not None else ""
@@ -60,6 +72,8 @@ def _get_sessions(request: Request) -> async_sessionmaker[AsyncSession]:
 )
 async def list_device_states(classroom_id: UUID, request: Request) -> DeviceControlStateList:
     _require_loopback(request)
+    if is_private_bridge_request(request) and classroom_id != LOCAL_CLASSROOM_ID:
+        raise HTTPException(status_code=404, detail="Classroom was not found.")
     now = datetime.now(UTC)
     sessions = _get_sessions(request)
     async with sessions() as session:
@@ -142,6 +156,7 @@ async def submit_device_command(
             device_id=device_id,
             idempotency_key=idempotency_key,
             request=body,
+            operator_email=getattr(request.state, "remote_operator_email", None),
         )
     except DeviceNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Device is not registered.") from exc
@@ -204,3 +219,34 @@ async def read_command_status(command_id: UUID, request: Request) -> DeviceComma
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+@router.get(
+    "/classrooms/{classroom_id}/urgency",
+    response_model=UrgencyStatus,
+)
+async def read_urgency_status(classroom_id: UUID, request: Request) -> UrgencyStatus:
+    _require_loopback(request)
+    if classroom_id != LOCAL_CLASSROOM_ID:
+        raise HTTPException(status_code=404, detail="Classroom was not found.")
+    result = await get_local_urgency_status(_get_sessions(request))
+    return UrgencyStatus(**result)
+
+
+@router.post(
+    "/classrooms/{classroom_id}/urgency",
+    response_model=UrgencyStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def activate_urgency(classroom_id: UUID, request: Request) -> UrgencyStatus:
+    _require_loopback(request)
+    if classroom_id != LOCAL_CLASSROOM_ID:
+        raise HTTPException(status_code=404, detail="Classroom was not found.")
+    try:
+        result = await start_local_urgency(_get_sessions(request))
+    except UrgencyUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    dispatcher = getattr(request.app.state, "command_dispatcher", None)
+    if dispatcher is not None:
+        dispatcher.wake()
+    return UrgencyStatus(**result)

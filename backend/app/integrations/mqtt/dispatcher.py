@@ -45,7 +45,9 @@ class MqttCommandDispatcher:
             self._client.username_pw_set(username, password)
         if tls_enabled:
             self._client.tls_set()
+        self._client.reconnect_delay_set(min_delay=1, max_delay=30)
         self._client.on_connect = self._on_connect
+        self._client.on_connect_fail = self._on_connect_fail
         self._client.on_disconnect = self._on_disconnect
         self._host = host
         self._port = port
@@ -59,18 +61,34 @@ class MqttCommandDispatcher:
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        await asyncio.to_thread(self._client.connect, self._host, self._port)
-        self._client.loop_start()
+        self._stopping = False
+        self._client.connect_async(self._host, self._port, keepalive=30)
+        result = self._client.loop_start()
+        if result != mqtt.MQTT_ERR_SUCCESS:
+            raise RuntimeError(f"MQTT dispatcher network loop failed to start: {result}")
         self._task = asyncio.create_task(self._dispatch_loop())
 
     async def stop(self) -> None:
         self._stopping = True
+        self.connected = False
         self._wake_event.set()
-        if self._task is not None:
-            await self._task
-        self._client.loop_stop()
-        if self._client.is_connected():
-            await asyncio.to_thread(self._client.disconnect)
+        try:
+            if self._task is not None:
+                await self._task
+        finally:
+            self._task = None
+            self._loop = None
+            try:
+                await asyncio.to_thread(self._client.disconnect)
+            finally:
+                await asyncio.to_thread(self._client.loop_stop)
+
+    def _on_connect_fail(self, _client: mqtt.Client, _userdata: Any) -> None:
+        self.connected = False
+        if not self._stopping:
+            logger.warning(
+                "MQTT dispatcher connection failed to %s:%s; retrying", self._host, self._port
+            )
 
     def wake(self) -> None:
         if self._loop is not None and not self._loop.is_closed():
@@ -223,6 +241,9 @@ class MqttCommandDispatcher:
         reason_code: Any,
         *_args: Any,
     ) -> None:
+        self.connected = False
+        if self._stopping:
+            return
         if getattr(reason_code, "is_failure", False):
             logger.error("MQTT dispatcher connection rejected: %s", reason_code)
             return
@@ -239,8 +260,8 @@ class MqttCommandDispatcher:
         *_args: Any,
     ) -> None:
         self.connected = False
-        if reason_code:
-            logger.warning("MQTT command dispatcher disconnected: %s", reason_code)
+        if not self._stopping:
+            logger.warning("MQTT command dispatcher disconnected: %s; reconnecting", reason_code)
 
 
 def _format_utc(value: datetime) -> str:

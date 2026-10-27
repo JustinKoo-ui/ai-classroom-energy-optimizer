@@ -21,10 +21,26 @@ connected, and the CV worker must be publishing observations to that broker.
 The browser polls `GET /api/v1/classrooms/{classroom_id}/occupancy/current`
 using the shared dashboard interval. Counts are shown only for fresh readings;
 stale and missing observations display as unknown rather than zero. This
-endpoint is currently loopback-only, so it is not available from a public
-website deployment.
+endpoint accepts direct loopback access or the authenticated private Worker
+bridge described in [the Cloudflare guide](../docs/cloudflare-live.md).
 
 ## Data-service boundary
+
+The AI insights card shares the overview's live occupancy request and five-second
+polling interval. It shows the actual count, observation age/freshness, and a
+bounded 60-second observed trend collected during the page session. This is
+observation, not a departure forecast. The card expires counts after 15 seconds,
+including during failed or stalled requests, and shows unknown rather than
+assuming vacancy. Trend history resets across observation gaps or connection/
+classroom changes. Reloading begins a new trend history.
+
+No trained departure model is connected. The CV publisher currently sends a
+fixed confidence of 0.97, so this card does not present it as measured accuracy
+or prediction confidence. Demo departure probabilities, recommendations and
+model versions are not used by this card. Energy charts keep their existing
+demo data; this change does not call the AI provider or issue device commands.
+The existing authenticated Cloudflare occupancy proxy also supports this card.
+Run `pnpm test:insights` for freshness and observed-trend regression checks.
 
 `src/api/dashboard-service.ts` selects a `DashboardService` implementation:
 
@@ -47,17 +63,48 @@ The separate local hardware-control service is enabled only when
 It polls the loopback REST API and sends `set_power`/`set_mode` requests there;
 the browser never connects to MQTT. The backend requires
 `LOCAL_HARDWARE_CONTROL_ENABLED=true`, an allowed deterministic decision, and a
-fresh online device state. The Cloudflare-hosted website always remains a
-demo and cannot control the local ESP32.
+fresh online device state. Cloudflare relay controls have a separate opt-in:
+`NEXT_PUBLIC_ENABLE_REMOTE_HARDWARE_CONTROLS=true`, an empty production API
+base and an exact `NEXT_PUBLIC_HARDWARE_CONTROL_ORIGIN`. The Worker verifies
+Cloudflare Access JWTs and checks a private operator email allowlist. The
+backend independently checks the bridge secret, operator and relay scope.
+See [the setup guide](../docs/cloudflare-live.md).
 
 The current board supports digital ON/OFF and Auto/Manual only. Fan speed,
 brightness, AC setpoint, wattage, and energy remain disabled/simulated and are
 never sent as device commands. See the ESP32 setup and safety limits in
 [`../firmware/esp32/README.md`](../firmware/esp32/README.md).
 
+When hardware controls are enabled, the dashboard also polls urgency status.
+Only localhost offers an urgency request through
+`POST /api/v1/classrooms/{classroom_id}/urgency`. The status is policy
+monitoring only; device cards continue to show the ESP32-reported output state.
+The overview also reports fresh PIR motion as a sensor reading, not occupancy.
+
 UI components consume typed dashboard state and contain no embedded sensor or
 energy values. The demo-state selector exercises demo-panel operation, device
 disconnection and demo feed loss.
+
+## Recorded energy and AI commentary
+
+The Environmental Analyst displays runtime coverage beside each recorded-energy
+estimate. Combined coverage weights devices by their elapsed observation time.
+Provisional and final comparison percentages are withheld until the reporting
+period has ended with complete runtime coverage. Specific messages distinguish
+an unfinished period, late tracking, missing observations and a zero baseline;
+waiting until midnight cannot fill existing gaps.
+
+Detailed calculation diagnostics, disclosures and generated data-quality notes
+are available in collapsed **Methodology and limitations** panels. Numerical
+analytics remain independent of AI commentary and hardware control.
+
+Run the coverage/presentation regression tests without adding dependencies:
+
+```powershell
+pnpm test:analytics
+pnpm test:proxy
+pnpm test:hardware
+```
 
 ## Key source locations
 

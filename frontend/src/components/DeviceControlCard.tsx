@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { DashboardDevice, DeviceControlRequest } from "@/src/types/dashboard";
 
 interface DeviceControlCardProps {
@@ -129,8 +129,9 @@ export function DeviceControlCard({
 
       {device.kind === "lighting" && device.brightness_pct !== null && (
         <BrightnessControl
+          key={device.brightness_pct}
           value={device.brightness_pct}
-          disabled={manualControlDisabled || device.hardware_backed}
+          disabled={manualControlDisabled || device.hardware_backed === true}
           automatic={device.mode === "auto"}
           onCommit={(brightness_pct) =>
             submit({ brightness_pct }, "Dashboard lighting brightness adjustment")
@@ -143,13 +144,15 @@ export function DeviceControlCard({
 
       {!device.connected && (
         <div className="device-card__offline-notice" role="status">
-          Controls are locked until the controller reconnects.
+          {device.control_lock_reason ?? "Controls are locked until the controller reconnects."}
         </div>
       )}
 
       <footer className="device-card__footer">
         <span className={device.connected ? "device-online" : "device-offline"}>
-          {device.connected ? (device.pending ? "Pending approval" : device.status_label) : "Disconnected"}
+          {device.connected
+            ? device.pending ? device.hardware_backed ? "Awaiting ESP32 acknowledgement" : "Pending approval" : device.status_label
+            : device.hardware_backed ? device.status_label : "Disconnected"}
         </span>
         <strong>
           {device.hardware_backed
@@ -175,7 +178,6 @@ function BrightnessControl({
   onCommit: (value: number) => void;
 }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
   return (
     <div className="range-control">
       <div className="control-label-row">

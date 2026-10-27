@@ -23,19 +23,27 @@ def _device(**overrides: object) -> SimpleNamespace:
         "environment_at": datetime.now(UTC),
         "sample_interval_ms": 2000,
         "motion_detected": True,
+        "urgency_active": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
 
 
-def test_manual_power_on_is_allowed_only_with_fresh_motion_and_online_device() -> None:
+def test_manual_power_on_is_allowed_without_a_pir_motion_interlock() -> None:
     request = ManualCommandRequest(
         action="set_power",
         value={"on": True},
         reason="Local test",
     )
 
-    reasons, _, _ = _evaluate_policy(device=_device(), request=request, now=datetime.now(UTC))
+    reasons, _, _ = _evaluate_policy(
+        device=_device(
+            motion_detected=False,
+            environment_at=datetime.now(UTC) - timedelta(seconds=10),
+        ),
+        request=request,
+        now=datetime.now(UTC),
+    )
 
     assert reasons == []
 
@@ -43,9 +51,6 @@ def test_manual_power_on_is_allowed_only_with_fresh_motion_and_online_device() -
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
-        ({"motion_detected": False}, "pir_master_no_motion"),
-        ({"motion_detected": None}, "motion_state_unknown"),
-        ({"environment_at": datetime.now(UTC) - timedelta(seconds=10)}, "safety_state_stale"),
         ({"operational_status": "offline"}, "device_offline"),
         ({"fault_codes": ["interlock_open"]}, "device_fault"),
     ],
@@ -97,6 +102,22 @@ def test_power_command_is_denied_while_controller_is_in_auto_mode() -> None:
     )
 
     assert "device_auto_mode" in reasons
+
+
+def test_manual_command_is_denied_during_urgency_override() -> None:
+    request = ManualCommandRequest(
+        action="set_power",
+        value={"on": False},
+        reason="Local test",
+    )
+
+    reasons, _, _ = _evaluate_policy(
+        device=_device(urgency_active=True),
+        request=request,
+        now=datetime.now(UTC),
+    )
+
+    assert "urgency_active" in reasons
 
 
 def test_variable_actions_are_rejected_by_request_contract() -> None:

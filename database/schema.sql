@@ -218,6 +218,30 @@ CREATE TABLE occupancy_current (
     CHECK (status <> 'vacant_confirmed' OR person_count = 0)
 );
 
+CREATE TABLE occupancy_automation_state (
+    classroom_id uuid PRIMARY KEY REFERENCES classrooms(id) ON DELETE CASCADE,
+    qualifying_since timestamptz,
+    below_threshold_since timestamptz,
+    pir_scan_until timestamptz,
+    fallback_lights_latched boolean NOT NULL DEFAULT false,
+    last_motion_detected boolean,
+    camera_was_fresh boolean NOT NULL DEFAULT false,
+    urgency_started_at timestamptz,
+    urgency_until timestamptz,
+    urgency_result text NOT NULL DEFAULT 'inactive'
+        CHECK (urgency_result IN (
+            'inactive', 'monitoring', 'completed_no_presence',
+            'completed_presence', 'completed_camera_unknown'
+        )),
+    urgency_restore_states jsonb NOT NULL DEFAULT '{}'::jsonb,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (jsonb_typeof(urgency_restore_states) = 'object'),
+    CHECK (
+        (urgency_started_at IS NULL AND urgency_until IS NULL)
+        OR (urgency_started_at IS NOT NULL AND urgency_until > urgency_started_at)
+    )
+);
+
 CREATE TABLE model_versions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
@@ -640,5 +664,32 @@ CREATE TRIGGER trg_control_decisions_immutable
 CREATE TRIGGER trg_command_events_immutable
     BEFORE UPDATE OR DELETE ON command_events
     FOR EACH ROW EXECUTE FUNCTION prevent_audit_record_mutation();
+
+-- Analytics evidence is independent of desired/operational control state.
+CREATE TABLE analytics_runtime_segments (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    classroom_id uuid NOT NULL REFERENCES classrooms(id) ON DELETE RESTRICT,
+    device_id uuid NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
+    state text NOT NULL CHECK (state IN ('on', 'off', 'unknown')),
+    mode text NOT NULL CHECK (mode IN ('auto', 'manual', 'unknown')),
+    first_observed_at timestamptz NOT NULL,
+    last_observed_at timestamptz NOT NULL,
+    freshness_limit_seconds integer NOT NULL DEFAULT 15
+        CHECK (freshness_limit_seconds BETWEEN 2 AND 300),
+    source text NOT NULL DEFAULT 'esp32_live_state'
+        CHECK (source = 'esp32_live_state'),
+    timestamp_kind text NOT NULL DEFAULT 'observation'
+        CHECK (timestamp_kind = 'observation'),
+    first_message_id uuid NOT NULL,
+    last_message_id uuid NOT NULL,
+    quality text[] NOT NULL DEFAULT '{}',
+    CHECK (last_observed_at >= first_observed_at),
+    UNIQUE (device_id, first_observed_at)
+);
+
+CREATE INDEX ix_analytics_runtime_device_time
+    ON analytics_runtime_segments (device_id, last_observed_at DESC);
+CREATE INDEX ix_analytics_runtime_classroom_time
+    ON analytics_runtime_segments (classroom_id, first_observed_at, last_observed_at);
 
 COMMIT;

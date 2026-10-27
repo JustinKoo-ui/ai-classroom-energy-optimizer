@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.api.v1.routers.analytics import router as analytics_router
+from app.api.v1.routers.camera import router as camera_router
 from app.api.v1.routers.device_control import router as device_control_router
 from app.api.v1.routers.environment_analysis import router as environment_analysis_router
 from app.core.config import Settings
 from app.core.db import create_database
+from app.core.private_bridge import PrivateBridgeMiddleware
 from app.integrations.mqtt.dispatcher import MqttCommandDispatcher
 from app.integrations.mqtt.ingestion import EnvironmentEnvelope, MqttIngestion
 from app.repositories.device_control import (
@@ -27,6 +34,7 @@ from app.repositories.device_control import (
 )
 from app.repositories.environment import insert_environment_reading
 from app.repositories.occupancy import insert_occupancy_observation
+from app.repositories.runtime_history import store_runtime_observation
 from app.schemas.mqtt import (
     AvailabilityPayload,
     CommandAcknowledgementPayload,
@@ -34,6 +42,51 @@ from app.schemas.mqtt import (
     MqttEnvelope,
     OccupancyObservationPayload,
 )
+from app.services.camera_preview import CameraPreview
+from app.services.environmental_analyst import EnvironmentalAnalyst
+from app.services.occupancy_automation import evaluate_local_automation
+
+logger = logging.getLogger(__name__)
+
+
+async def _store_runtime_observation_safely(
+    sessions: async_sessionmaker[AsyncSession],
+    envelope: MqttEnvelope[DeviceStatePayload],
+    retained: bool,
+    stale_after_seconds: int,
+    *,
+    timeout_seconds: float = 2,
+) -> None:
+    """Bound independent analytics work after operational persistence commits."""
+    try:
+        async with asyncio.timeout(timeout_seconds), sessions() as analytics_session:
+            await store_runtime_observation(
+                analytics_session,
+                classroom_id=envelope.classroom_id,
+                message_id=envelope.message_id,
+                occurred_at=envelope.occurred_at,
+                payload=envelope.payload,
+                retained=retained,
+                stale_after_seconds=stale_after_seconds,
+            )
+    except (SQLAlchemyError, TimeoutError):
+        logger.warning("Runtime analytics observation could not be stored", exc_info=True)
+
+
+async def _run_occupancy_automation(
+    sessions: async_sessionmaker[AsyncSession],
+    dispatcher: MqttCommandDispatcher,
+) -> None:
+    while True:
+        try:
+            queued = await evaluate_local_automation(sessions)
+            if queued:
+                dispatcher.wake()
+        except SQLAlchemyError:
+            logger.exception("Occupancy automation database evaluation failed")
+            await asyncio.sleep(5)
+            continue
+        await asyncio.sleep(1)
 
 
 @asynccontextmanager
@@ -66,6 +119,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 occurred_at=envelope.occurred_at,
                 payload=envelope.payload,
             )
+
+        # Analytics uses a separate transaction: a missing migration or failed
+        # analytics write cannot undo the device report or interrupt control.
+        await _store_runtime_observation_safely(
+            sessions, envelope, retained, settings.analytics_stale_after_seconds
+        )
 
     async def persist_gateway_availability(
         envelope: MqttEnvelope[AvailabilityPayload],
@@ -121,20 +180,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.engine = engine
     app.state.sessions = sessions
+    app.state.analytics_settings = settings
+    app.state.environmental_analyst = EnvironmentalAnalyst(settings)
+    app.state.camera_preview = CameraPreview(
+        settings.camera_source, enabled=settings.camera_preview_enabled
+    )
     app.state.mqtt = mqtt_ingestion
     app.state.command_dispatcher = command_dispatcher
     app.state.local_hardware_control_enabled = settings.local_hardware_control_enabled
+    automation_task: asyncio.Task[None] | None = None
     try:
         await mqtt_ingestion.start()
         await command_dispatcher.start()
+        if settings.local_hardware_control_enabled:
+            automation_task = asyncio.create_task(
+                _run_occupancy_automation(sessions, command_dispatcher)
+            )
         yield
     finally:
+        await app.state.camera_preview.close()
+        if automation_task is not None:
+            automation_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await automation_task
         await command_dispatcher.stop()
         await mqtt_ingestion.stop()
         await engine.dispose()
 
 
 app = FastAPI(title="AI Classroom Energy Optimizer", version="1.0", lifespan=lifespan)
+app.add_middleware(PrivateBridgeMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -145,10 +220,13 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Idempotency-Key"],
+    allow_headers=["Content-Type", "Idempotency-Key", "Authorization"],
+    allow_private_network=True,
 )
 app.include_router(environment_analysis_router)
 app.include_router(device_control_router)
+app.include_router(analytics_router)
+app.include_router(camera_router)
 
 
 @app.get("/health/live")

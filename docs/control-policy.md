@@ -84,6 +84,66 @@ automatic actions. Overrides require an owner, reason, start and expiry time;
 indefinite overrides are disabled by default. Expiry returns the device to
 automatic evaluation, not necessarily to its previous physical state.
 
+### Local ESP32 relay prototype
+
+The localhost-only prototype uses independently reported per-device `auto`
+and `manual` modes. Manual mode remains active until the operator explicitly
+switches that device to Auto. While manual, occupancy and sensor policy does
+not change that relay. Urgency temporarily takes precedence without changing
+the selected modes and restores prior Manual states when it ends.
+
+For this prototype, a fresh camera count >= 1 immediately requests the fan
+ON. Automatic lighting uses PIR as its first gate, independent of the camera
+count: without fresh PIR motion, the light is OFF even at ADC 4095. Only with
+fresh PIR motion does a fresh valid 12-bit LDR ADC value > 1000 request lighting
+ON. ADC <= 1000 requests OFF even during motion. Both conditions must hold:
+`fresh PIR motion AND fresh valid LDR ADC > 1000`. A stale or invalid input
+cannot satisfy its gate, so automatic lighting is requested OFF.
+
+A fresh camera count >= 3 starts the continuous AC qualification timer.
+After at least 5 continuous seconds the policy requests AC ON, and only when
+a fresh valid temperature is >=26°C OR a fresh valid relative humidity is
+>=65%. Either independently valid reading can satisfy its threshold; invalid
+readings never do. AC is requested OFF when occupancy falls below three,
+occupancy becomes unknown/stale, environment data becomes stale, or neither
+threshold can be established. There is no additional vacancy grace period.
+
+Without confirmed occupants, a fresh PIR rising motion event starts a
+non-blocking 20-second camera-scanning window. This applies
+to both a valid zero count and unavailable camera data; these remain distinct
+input states. Sustained HIGH does not extend or restart a scan. A fresh LOW
+re-arms the next rising event. PIR alone never requests fan or AC ON.
+
+Any fresh count >= 1 during the scan cancels its timeout and immediately
+requests the fan ON. Throughout scanning, handoff, and normal operation, the
+light follows the same PIR-then-LDR gates; the timer never forces it ON.
+If no occupant is confirmed by timeout, the scan ends. Sustained PIR HIGH
+cannot restart or extend the scan timer. When PIR becomes LOW or stale,
+automatic lighting is requested OFF regardless of LDR or camera occupancy.
+With no confirmed occupancy, the fan and AC remain OFF; only motion together
+with ADC > 1000 can request lighting ON. Unknown/stale occupancy is never
+reported as a valid zero and resets AC
+qualification. Normal AC qualification also restarts after urgency control.
+Qualification also resets after an unobserved backend evaluation gap longer
+than the occupancy freshness limit, a gap between camera observations longer
+than that limit, or a stored below-three observation within the qualifying
+period, even if the latest count has already recovered.
+
+These are targets evaluated by the existing one-second backend worker, not
+claims of instantaneous physical switching. Per-device Manual priority,
+device freshness, faults, pending commands, cooldowns and acknowledgements
+continue to gate actual commands. The existing telemetry contract requires
+both DHT22 values and skips a sample if either is invalid; this policy change
+does not alter that acquisition or message format.
+
+Urgency immediately requests all three relays on and monitors for a fixed
+five minutes. At expiry, a fresh zero count turns all three off. A fresh
+nonzero count resumes the selected per-device policy; unknown occupancy does
+not prove absence and therefore does not trigger the no-presence shutoff.
+All local prototype settings are implemented in the deterministic backend
+policy and its persisted automation state; firmware only validates/applies
+commands and reports actual output state.
+
 ## Schedules
 
 Schedules create policy requests, not commands. At execution time, the scheduler
@@ -106,4 +166,3 @@ one input bounded by configured thresholds. AI output cannot:
 Each evaluation persists trigger, actor, input snapshot, requested action,
 matching rule, allow/deny result, reason codes, bounded output (if allowed),
 policy version and timestamps. The record is immutable.
-

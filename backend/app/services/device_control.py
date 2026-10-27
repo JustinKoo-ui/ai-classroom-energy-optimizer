@@ -36,6 +36,7 @@ async def submit_manual_command(
     device_id: UUID,
     idempotency_key: str,
     request: ManualCommandRequest,
+    operator_email: str | None = None,
 ) -> DeviceCommandSubmission:
     if device_id not in LOCAL_RELAY_DEVICE_IDS:
         raise DeviceNotFoundError
@@ -51,6 +52,33 @@ async def submit_manual_command(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
             {"lock_key": f"{LOCAL_OPERATOR_ID}:{idempotency_key}"},
         )
+        await session.execute(
+            text(
+                """
+                INSERT INTO occupancy_automation_state (classroom_id)
+                VALUES (:classroom_id)
+                ON CONFLICT (classroom_id) DO NOTHING
+                """
+            ),
+            {"classroom_id": LOCAL_CLASSROOM_ID},
+        )
+        urgency_result = await session.execute(
+            text(
+                """
+                SELECT urgency_until
+                FROM occupancy_automation_state
+                WHERE classroom_id = :classroom_id
+                FOR UPDATE
+                """
+            ),
+            {"classroom_id": LOCAL_CLASSROOM_ID},
+        )
+        urgency_row = urgency_result.mappings().one_or_none()
+        urgency_active = (
+            urgency_row is not None
+            and urgency_row["urgency_until"] is not None
+            and urgency_row["urgency_until"] > now
+        )
         result = await session.execute(
             text(
                 """
@@ -60,6 +88,7 @@ async def submit_manual_command(
                        ds.fault_codes, ds.last_seen_at,
                        env.occurred_at AS environment_at,
                        env.motion_detected, env.sample_interval_ms,
+                       CAST(:urgency_active AS boolean) AS urgency_active,
                        pending.id AS pending_command_id,
                        recent.applied_at AS previous_applied_at
                 FROM devices AS d
@@ -97,6 +126,7 @@ async def submit_manual_command(
                 "device_id": device_id,
                 "classroom_id": LOCAL_CLASSROOM_ID,
                 "site_id": LOCAL_SITE_ID,
+                "urgency_active": urgency_active,
             },
         )
         device: Any = result.mappings().one_or_none()
@@ -108,6 +138,7 @@ async def submit_manual_command(
             idempotency_key=idempotency_key,
             device_id=device_id,
             request=request,
+            operator_email=operator_email,
         )
         if replay is not None:
             return DeviceCommandSubmission(replay, replayed=True)
@@ -135,6 +166,9 @@ async def submit_manual_command(
             "requested_value": requested_value,
             "expires_at": expires_at.isoformat(),
         }
+        if operator_email is not None:
+            snapshot["remote_operator_email"] = operator_email
+            snapshot["authentication_source"] = "cloudflare_access"
 
         await session.execute(
             text(
@@ -238,7 +272,11 @@ async def submit_manual_command(
 
 def _bounded_value(request: ManualCommandRequest) -> dict[str, Any]:
     if request.action is CommandAction.SET_POWER:
-        return {"on": request.value["on"], "mode": "manual"}
+        return {
+            "on": request.value["on"],
+            "mode": "manual",
+            "source": "manual",
+        }
     return {"mode": request.value["mode"]}
 
 
@@ -246,6 +284,8 @@ def _evaluate_policy(
     *, device: Any, request: ManualCommandRequest, now: datetime
 ) -> tuple[list[str], str, str]:
     reasons: list[str] = []
+    if device.urgency_active:
+        reasons.append("urgency_active")
     if not device.enabled:
         reasons.append("device_disabled")
     if device.operational_status != "online":
@@ -272,21 +312,6 @@ def _evaluate_policy(
     ):
         reasons.append("command_cooldown")
 
-    if request.action is CommandAction.SET_POWER and request.value["on"]:
-        if device.environment_at is None:
-            reasons.append("safety_state_unknown")
-        else:
-            sample_interval = max(int(device.sample_interval_ms or 2000), 2000)
-            max_environment_age = timedelta(milliseconds=sample_interval * 3)
-            if now - device.environment_at > max_environment_age:
-                reasons.append("safety_state_stale")
-            if device.environment_at > now + timedelta(seconds=5):
-                reasons.append("safety_state_clock_skew")
-            if device.motion_detected is None:
-                reasons.append("motion_state_unknown")
-            elif not device.motion_detected:
-                reasons.append("pir_master_no_motion")
-
     if reasons:
         return (
             reasons,
@@ -306,6 +331,7 @@ async def _existing_idempotent_request(
     idempotency_key: str,
     device_id: UUID,
     request: ManualCommandRequest,
+    operator_email: str | None = None,
 ) -> ManualCommandResponse | None:
     result = await session.execute(
         text(
@@ -313,7 +339,7 @@ async def _existing_idempotent_request(
             SELECT r.id AS request_id, r.device_id, r.requested_action,
                    r.requested_value, r.reason, d.id AS decision_id,
                    r.requested_at, r.expires_at,
-                   d.outcome, d.reason_codes, d.summary, c.id AS command_id,
+                   d.outcome, d.reason_codes, d.summary, d.input_snapshot, c.id AS command_id,
                    c.status AS command_status
             FROM control_requests AS r
             JOIN control_decisions AS d ON d.request_id = r.id
@@ -327,12 +353,14 @@ async def _existing_idempotent_request(
     if row is None:
         return None
     desired = _bounded_value(request)
+    snapshot = _json_object(row.input_snapshot or {})
     if (
         row.device_id != device_id
         or row.requested_action != request.action.value
         or row.reason != request.reason
         or _json_object(row.requested_value) != desired
         or int((row.expires_at - row.requested_at).total_seconds()) != request.expires_in_seconds
+        or snapshot.get("remote_operator_email") != operator_email
     ):
         raise IdempotencyConflictError
     return ManualCommandResponse(

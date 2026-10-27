@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <AsyncMqttClient.h>
 #include <Preferences.h>
+#include <atomic>
 #include <math.h>
 #include <time.h>
 
@@ -76,6 +77,7 @@ void loop() {
 
 #else
 #include "secrets.h"
+#include "relay_config.h"
 
 #ifndef FAN_DEVICE_ID
 #define FAN_DEVICE_ID "d7958a13-4c75-47e8-8b5e-4f4e00000027"
@@ -101,10 +103,6 @@ constexpr uint32_t kReadIntervalMs = 2000;
 constexpr uint32_t kPirWarmupMs = 30000;
 constexpr uint32_t kReconnectIntervalMs = 5000;
 constexpr uint8_t kLdrSamples = 16;
-constexpr uint16_t kLdrThreshold = 4000;
-constexpr float kTemperatureThresholdC = 26.0F;
-constexpr float kHumidityThresholdPct = 65.0F;
-constexpr bool kRelayActiveLow = false;
 constexpr size_t kMaxCommandBytes = 1800;
 constexpr uint8_t kCommandHistorySize = 12;
 
@@ -112,9 +110,9 @@ struct RelayDevice {
   const char *id;
   const char *name;
   uint8_t pin;
+  bool activeLow;
   bool isOn;
   bool manualMode;
-  bool manualTarget;
 };
 
 struct QueuedCommand {
@@ -129,9 +127,9 @@ struct CommandReceipt {
 };
 
 RelayDevice devices[] = {
-    {FAN_DEVICE_ID, "FAN (Red)", 27, false, false, false},
-    {LIGHT_DEVICE_ID, "LIGHT (Yellow)", 12, false, false, false},
-    {AC_DEVICE_ID, "AC (Blue)", 14, false, false, false},
+    {FAN_DEVICE_ID, "FAN (Red)", 27, relay_config::kFanActiveLow, false, false},
+    {LIGHT_DEVICE_ID, "LIGHT (Yellow)", 12, relay_config::kLightActiveLow, false, false},
+    {AC_DEVICE_ID, "AC (Blue)", 14, relay_config::kAcActiveLow, false, false},
 };
 
 DHT dht(DHT22_GPIO, DHT22);
@@ -155,6 +153,8 @@ uint32_t stateVersion = 0;
 uint32_t receiptWriteIndex = 0;
 volatile bool mqttConnected = false;
 volatile bool mqttConnecting = false;
+std::atomic<uint32_t> pendingMqttPublishes{0};
+std::atomic<bool> mqttTelemetryReady{false};
 char bootId[37];
 CommandReceipt commandReceipts[kCommandHistorySize] = {};
 
@@ -261,12 +261,20 @@ String makeTopic(const char *suffix) {
   return String("aceo/v1/") + SITE_ID + "/" + CLASSROOM_ID + "/" + suffix;
 }
 
+void completeMqttPublish() {
+  uint32_t pending = pendingMqttPublishes.load();
+  while (pending != 0 &&
+         !pendingMqttPublishes.compare_exchange_weak(pending, pending - 1)) {}
+}
+
 bool publishJson(const String &topic, JsonDocument &document, uint8_t qos, bool retain) {
   if (!mqttConnected) return false;
   String serialized;
   serializeJson(document, serialized);
+  if (qos > 0) pendingMqttPublishes.fetch_add(1);
   const uint16_t packetId = mqttClient.publish(
       topic.c_str(), qos, retain, serialized.c_str(), serialized.length());
+  if (qos > 0 && packetId == 0) completeMqttPublish();
   return packetId != 0;
 }
 
@@ -288,12 +296,8 @@ void persistStateVersion() {
   preferences.putUInt("stateVersion", stateVersion);
 }
 
-void controlOutput(uint8_t pin, bool turnOn) {
-  if (kRelayActiveLow) {
-    digitalWrite(pin, turnOn ? LOW : HIGH);
-  } else {
-    digitalWrite(pin, turnOn ? HIGH : LOW);
-  }
+void controlOutput(const RelayDevice &device, bool turnOn) {
+  digitalWrite(device.pin, relay_config::outputHigh(turnOn, device.activeLow) ? HIGH : LOW);
 }
 
 void setDeviceMode(RelayDevice &device, bool manualMode) {
@@ -308,7 +312,7 @@ void setDeviceOutput(RelayDevice &device, bool turnOn) {
     device.isOn = turnOn;
     persistStateVersion();
   }
-  controlOutput(device.pin, turnOn);
+  controlOutput(device, turnOn);
 }
 
 void publishDeviceState(const RelayDevice &device) {
@@ -370,34 +374,6 @@ uint16_t readLdrAdc() {
     delay(3);
   }
   return static_cast<uint16_t>(sum / kLdrSamples);
-}
-
-void applyAutomation() {
-  motionDetected = digitalRead(PIR_GPIO) == HIGH;
-  if (!motionDetected) {
-    for (RelayDevice &device : devices) {
-      device.manualTarget = false;
-      setDeviceOutput(device, false);
-    }
-    return;
-  }
-
-  const bool dhtValid =
-      isfinite(temperatureC) && isfinite(humidityPct) &&
-      temperatureC >= -20.0F && temperatureC <= 80.0F &&
-      humidityPct >= 0.0F && humidityPct <= 100.0F;
-  const bool automaticTargets[] = {
-      true,
-      ldrAdc >= kLdrThreshold,
-      dhtValid && temperatureC > kTemperatureThresholdC &&
-          humidityPct > kHumidityThresholdPct,
-  };
-
-  for (size_t index = 0; index < 3; ++index) {
-    RelayDevice &device = devices[index];
-    const bool target = device.manualMode ? device.manualTarget : automaticTargets[index];
-    setDeviceOutput(device, target);
-  }
 }
 
 void publishTelemetry() {
@@ -517,6 +493,11 @@ void rejectCommand(
     const char *deviceId,
     const char *reasonCode,
     RelayDevice &device) {
+  Serial.printf(
+      "Rejected MQTT command %s for device %s: %s\n",
+      commandId,
+      deviceId,
+      reasonCode);
   rememberReceipt(commandId, "rejected", reasonCode);
   publishAcknowledgement(commandId, deviceId, "rejected", reasonCode, device);
 }
@@ -554,7 +535,6 @@ void processCommand(const QueuedCommand &command) {
     return;
   }
 
-  applyAutomation();
   const char *reasonCode = "invalid_command";
   bool valid = true;
   const char *schemaVersion = root["schema_version"] | "";
@@ -610,14 +590,41 @@ void processCommand(const QueuedCommand &command) {
   bool requestedMode = false;
   bool targetManualMode = false;
   if (valid && strcmp(action, "set_power") == 0) {
-    if (value.size() != 2 || !value["on"].is<bool>() ||
-        strcmp(value["mode"] | "", "manual") != 0) {
+    const char *requestedModeName = value["mode"] | "";
+    const char *source = value["source"] | "";
+    const bool hasSource = value["source"].is<const char *>();
+    if ((value.size() != 2 && value.size() != 3) ||
+        !value["on"].is<bool>() ||
+        (strcmp(requestedModeName, "manual") != 0 &&
+         strcmp(requestedModeName, "auto") != 0) ||
+        (value.size() == 3 && !hasSource)) {
       reasonCode = "unsupported_power_value";
       valid = false;
     } else {
       requestedPower = value["on"].as<bool>();
-      requestedMode = true;
-      targetManualMode = true;
+      targetManualMode = strcmp(requestedModeName, "manual") == 0;
+      const char *effectiveSource =
+          hasSource ? source : (targetManualMode ? "manual" : "");
+      if (strcmp(effectiveSource, "manual") == 0 && targetManualMode) {
+        requestedMode = true;
+      } else if (strcmp(effectiveSource, "automation") == 0 ||
+                 strcmp(effectiveSource, "vacancy") == 0 ||
+                 strcmp(effectiveSource, "pir_fallback") == 0) {
+        if (targetManualMode || device.manualMode) {
+          reasonCode = "manual_mode_priority";
+          valid = false;
+        }
+      } else if (strcmp(effectiveSource, "urgency") == 0 ||
+                 strcmp(effectiveSource, "urgency_timeout") == 0 ||
+                 strcmp(effectiveSource, "manual_restore") == 0) {
+        if (targetManualMode != device.manualMode) {
+          reasonCode = "mode_mismatch";
+          valid = false;
+        }
+      } else {
+        reasonCode = "unsupported_command_source";
+        valid = false;
+      }
     }
   } else if (valid && strcmp(action, "set_mode") == 0) {
     const char *mode = value["mode"] | "";
@@ -639,27 +646,23 @@ void processCommand(const QueuedCommand &command) {
     valid = false;
   }
 
-  if (valid && requestedPower && digitalRead(PIR_GPIO) != HIGH) {
-    reasonCode = "pir_master_no_motion";
-    valid = false;
-  }
-
   if (!valid) {
-    applyAutomation();
     rejectCommand(commandId, deviceId, reasonCode, device);
     return;
   }
 
   if (requestedMode) {
     setDeviceMode(device, targetManualMode);
-    if (targetManualMode && !requestedPower) {
-      device.manualTarget = device.isOn;
-    }
   }
   if (strcmp(action, "set_power") == 0) {
-    device.manualTarget = requestedPower;
+    setDeviceOutput(device, requestedPower);
   }
-  applyAutomation();
+  Serial.printf(
+      "Applied MQTT command %s to %s: %s (%s)\n",
+      commandId,
+      device.name,
+      device.isOn ? "ON" : "OFF",
+      modeName(device));
   rememberReceipt(commandId, "applied", "applied");
   publishDeviceState(device);
   publishAcknowledgement(commandId, deviceId, "applied", nullptr, device);
@@ -697,6 +700,8 @@ void acceptIncomingMqttMessage(
   memcpy(message.payload, incomingPayload, incomingBytes + 1);
   if (commandQueue == nullptr || xQueueSend(commandQueue, &message, 0) != pdTRUE) {
     Serial.println("Command queue full; command was not applied.");
+  } else {
+    Serial.printf("Queued MQTT command from %s\n", incomingTopic);
   }
   incomingBytes = 0;
 }
@@ -717,7 +722,12 @@ void connectMqtt() {
 }
 
 void publishTelemetryAndStates() {
-  if (!mqttConnected) return;
+  // AsyncMqttClient serializes QoS 1 publications. Never accumulate old
+  // routine snapshots behind an unacknowledged batch. Sensor acquisition
+  // continues, and command state/acknowledgement publications bypass this gate.
+  if (!mqttConnected || !mqttTelemetryReady.load() || pendingMqttPublishes.load() != 0) {
+    return;
+  }
   publishTelemetry();
   for (const RelayDevice &device : devices) {
     publishDeviceState(device);
@@ -730,10 +740,16 @@ void readSensors() {
   ldrAdc = readLdrAdc();
   currentAdc = static_cast<uint16_t>(analogRead(ACS712_ANALOG_GPIO));
   motionDetected = digitalRead(PIR_GPIO) == HIGH;
-  applyAutomation();
 
   Serial.println();
   Serial.println("================================");
+  char sampledAt[25];
+  Serial.printf(
+      "UTC: %s | MQTT: %s | pending publishes: %lu | Wi-Fi RSSI: %d dBm\n",
+      utcTimestamp(sampledAt, sizeof(sampledAt)) ? sampledAt : "waiting for network time",
+      mqttConnected ? "connected" : mqttConnecting ? "connecting" : "disconnected",
+      static_cast<unsigned long>(pendingMqttPublishes.load()),
+      static_cast<int>(WiFi.RSSI()));
   Serial.printf("PIR Motion: %s\n", motionDetected ? "DETECTED" : "NOT DETECTED");
   if (!isfinite(temperatureC) || !isfinite(humidityPct)) {
     Serial.println("DHT22: READ ERROR");
@@ -744,16 +760,16 @@ void readSensors() {
   Serial.println("-------- DEVICE STATUS --------");
   for (const RelayDevice &device : devices) {
     Serial.printf(
-        "%s: %s (%s)\n",
+        "%s: logical %s (%s) | GPIO %u=%s | active-%s\n",
         device.name,
         device.isOn ? "ON" : "OFF",
-        modeName(device));
+        modeName(device),
+        static_cast<unsigned int>(device.pin),
+        digitalRead(device.pin) == HIGH ? "HIGH" : "LOW",
+        device.activeLow ? "LOW" : "HIGH");
   }
-  if (!motionDetected) {
-    Serial.println("NO MOTION - PIR MASTER OVERRIDE; ALL DEVICES OFF");
-  } else {
-    Serial.println("MOTION DETECTED - AUTOMATION/MANUAL CONTROL ACTIVE");
-  }
+  Serial.println("GPIO levels are pin readback, not confirmation of the connected load.");
+  Serial.println("PIR is reported as a sensor observation; the backend policy controls outputs.");
   Serial.println("================================");
 }
 
@@ -771,9 +787,10 @@ void setup() {
   analogSetPinAttenuation(LDR_ANALOG_GPIO, ADC_11db);
 
   for (RelayDevice &device : devices) {
-    digitalWrite(device.pin, kRelayActiveLow ? HIGH : LOW);
+    // Preload the device's OFF level before enabling its output driver.
+    controlOutput(device, false);
     pinMode(device.pin, OUTPUT);
-    controlOutput(device.pin, false);
+    controlOutput(device, false);
   }
 
   preferences.begin("aceo-control", false);
@@ -792,13 +809,20 @@ void setup() {
         makeTopic((String("command/") + devices[index].id + "/set").c_str());
   }
 
+  // UUID-based command topics are 130 bytes; AsyncMqttClient defaults to 128
+  // and silently drops longer incoming topics before calling onMessage.
+  mqttClient.setMaxTopicLength(sizeof(incomingTopic) - 1);
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setClientId(PRODUCER_ID);
+  mqttClient.setCleanSession(true);
   mqttClient.setKeepAlive(30);
   if (strlen(MQTT_USERNAME) > 0) {
     mqttClient.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
   }
   mqttClient.onConnect([](bool) {
+    // A clean session has discarded publications from the previous connection.
+    mqttTelemetryReady.store(false);
+    pendingMqttPublishes.store(0);
     mqttConnected = true;
     mqttConnecting = false;
     Serial.println("MQTT connected.");
@@ -807,16 +831,24 @@ void setup() {
     }
     publishGatewayAvailability("online");
     publishAllDeviceStates();
+    mqttTelemetryReady.store(true);
   });
   mqttClient.onDisconnect([](AsyncMqttClientDisconnectReason reason) {
+    mqttTelemetryReady.store(false);
     mqttConnected = false;
     mqttConnecting = false;
     Serial.printf("MQTT disconnected (reason %d).\n", static_cast<int>(reason));
   });
+  mqttClient.onPublish([](uint16_t) { completeMqttPublish(); });
   mqttClient.onMessage(acceptIncomingMqttMessage);
 
   snprintf(bootId, sizeof(bootId), "%s", newUuid().c_str());
   WiFi.mode(WIFI_STA);
+  // This powered controller needs prompt MQTT acknowledgements. The default
+  // modem-sleep mode can defer inbound Wi-Fi traffic until a DTIM beacon.
+  if (!WiFi.setSleep(false)) {
+    Serial.println("Could not disable Wi-Fi modem sleep; MQTT latency may increase.");
+  }
   WiFi.setAutoReconnect(true);
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
     if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
@@ -849,7 +881,6 @@ void loop() {
     processCommand(command);
   }
 
-  applyAutomation();
   if (millis() - lastSampleAt >= kReadIntervalMs) {
     lastSampleAt = millis();
     readSensors();

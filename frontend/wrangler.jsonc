@@ -3,6 +3,19 @@
   "name": "nexergy",
   "compatibility_date": "2026-05-22",
   "workers_dev": true,
+  "vpc_services": [
+    {
+      "binding": "CLASSROOM_API",
+      "service_id": "01a177f7-2878-7230-9ed8-3b7aa5904c38"
+    }
+  ],
+  "vars": {
+    "CLASSROOM_API_CLASSROOM_ID": "26e97d46-7a34-4439-922a-83684bda557d",
+    "CLASSROOM_API_ALLOWED_ORIGIN": "https://nexergy.justin58094.workers.dev",
+    "CLASSROOM_REMOTE_CONTROL_ENABLED": "true",
+    "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "https://frosty-surf-3483.cloudflareaccess.com",
+    "CLOUDFLARE_ACCESS_AUD": "7afef17bb8700e247d324cfd2277df60b471c6a98e30568a2f5009637629cbcc"
+  },
   "compatibility_flags": [
     "nodejs_compat"
   ],

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import ipaddress
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.private_bridge import require_monitoring_access
 from app.repositories.environment import (
     MetricAggregate,
     get_environment_reading_aggregate,
@@ -24,16 +24,7 @@ OCCUPANCY_STALE_AFTER = timedelta(seconds=15)
 
 
 def _require_loopback(request: Request) -> None:
-    client_host = request.client.host if request.client is not None else ""
-    try:
-        is_local_client = ipaddress.ip_address(client_host).is_loopback
-    except ValueError:
-        is_local_client = False
-    if not is_local_client:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Environment telemetry is restricted to localhost during the demo phase.",
-        )
+    require_monitoring_access(request)
 
 
 def _get_sessions(request: Request) -> async_sessionmaker[AsyncSession]:

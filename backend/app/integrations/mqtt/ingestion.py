@@ -77,6 +77,7 @@ class MqttIngestion:
         self._persist_gateway_availability = persist_gateway_availability
         self._persist_acknowledgement = persist_acknowledgement
         self.connected = False
+        self._stopping = False
         self._client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,  # type: ignore[attr-defined]
             client_id=client_id,
@@ -85,7 +86,9 @@ class MqttIngestion:
             self._client.username_pw_set(username, password)
         if tls_enabled:
             self._client.tls_set()
+        self._client.reconnect_delay_set(min_delay=1, max_delay=30)
         self._client.on_connect = self._on_connect
+        self._client.on_connect_fail = self._on_connect_fail
         self._client.on_subscribe = self._on_subscribe
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
@@ -94,14 +97,28 @@ class MqttIngestion:
 
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        await asyncio.to_thread(self._client.connect, self._host, self._port)
-        self._client.loop_start()
+        self._stopping = False
+        # Let Paho retry the first connection too, so a broker outage cannot
+        # prevent the API from starting and reporting degraded readiness.
+        self._client.connect_async(self._host, self._port, keepalive=30)
+        result = self._client.loop_start()
+        if result != mqtt.MQTT_ERR_SUCCESS:
+            raise RuntimeError(f"MQTT ingestion network loop failed to start: {result}")
 
     async def stop(self) -> None:
+        self._stopping = True
         self.connected = False
-        self._client.loop_stop()
-        if self._client.is_connected():
+        self._loop = None
+        try:
+            # Disconnect even while offline to cancel pending connection retries.
             await asyncio.to_thread(self._client.disconnect)
+        finally:
+            await asyncio.to_thread(self._client.loop_stop)
+
+    def _on_connect_fail(self, _client: mqtt.Client, _userdata: Any) -> None:
+        self.connected = False
+        if not self._stopping:
+            logger.warning("MQTT connection failed to %s:%s; retrying", self._host, self._port)
 
     def _on_connect(
         self,
@@ -111,6 +128,9 @@ class MqttIngestion:
         reason_code: Any,
         *_args: Any,
     ) -> None:
+        self.connected = False
+        if self._stopping:
+            return
         if getattr(reason_code, "is_failure", False):
             logger.error("MQTT connection rejected: %s", reason_code)
             return
@@ -154,8 +174,8 @@ class MqttIngestion:
         *_args: Any,
     ) -> None:
         self.connected = False
-        if reason_code:
-            logger.warning("MQTT disconnected: %s", reason_code)
+        if not self._stopping:
+            logger.warning("MQTT disconnected: %s; reconnecting", reason_code)
 
     def _on_message(self, _client: mqtt.Client, _userdata: Any, message: mqtt.MQTTMessage) -> None:
         if self._loop is None or self._loop.is_closed():

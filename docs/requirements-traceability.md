@@ -4,7 +4,7 @@
 |---:|---|---|---|
 | 1 | Detect occupancy | CV worker, MQTT ingestion, state estimator | `occupancy_observations`, occupancy REST |
 | 2 | Count occupants | Roboflow detector, ByteTrack deduplication | Aggregate count and confidence only |
-| 3 | Track without facial recognition | Process-local ByteTrack | No frames, faces or track IDs in database/API |
+| 3 | Track without facial recognition | Process-local ByteTrack | No frames, faces or track IDs in database or occupancy API; optional authenticated live preview has no retention |
 | 4 | Predict departure within 60s | Feature builder, prediction model | `prediction_runs`, prediction REST |
 | 5 | Maintain about 26 °C | Comfort rules, AC controller | Versioned policy decision and command audit |
 | 6 | Adjust fans | Temperature/humidity band rules | Device state, policy decision and command events |

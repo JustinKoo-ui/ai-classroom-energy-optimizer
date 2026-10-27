@@ -42,6 +42,7 @@ export interface DashboardDevice {
   status_label: string;
   updated_at: ISODateTime;
   hardware_backed?: boolean;
+  control_lock_reason?: string;
 }
 
 export interface AIInsight {

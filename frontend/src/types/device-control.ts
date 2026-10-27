@@ -40,3 +40,14 @@ export interface LocalDeviceCommandStatus {
   created_at: string;
   updated_at: string;
 }
+
+export interface LocalUrgencyStatus {
+  status:
+    | "inactive"
+    | "monitoring"
+    | "completed_no_presence"
+    | "completed_presence"
+    | "completed_camera_unknown";
+  started_at: string | null;
+  expires_at: string | null;
+}

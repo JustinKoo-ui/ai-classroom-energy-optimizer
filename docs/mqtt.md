@@ -6,6 +6,14 @@ MQTT is the device boundary. It is not exposed to the React frontend. Production
 connections use TLS and unique credentials per device, gateway, CV worker and
 backend dispatcher.
 
+Backend ingestion and command dispatch start their network loops even when
+the broker is initially unavailable. They retry connections with a 1–30 second
+backoff, and ingestion resubscribes after each successful connection. The API
+reports degraded readiness while disconnected. Reconnection does not refresh
+old observations: their original `occurred_at` still determines freshness.
+For local ESP32 connection and changing LAN-address checks, see the
+[firmware troubleshooting guide](../firmware/esp32/README.md#readings-repeatedly-become-stale).
+
 ## Topics
 
 | Topic suffix | Publisher | Subscriber | QoS | Retain |
@@ -200,15 +208,19 @@ Topic: `.../command/{device_id}/set`
     "decision_id": "a5ca49c2-62da-44d8-a780-a9247ec7ab85",
     "device_id": "ace7d91a-f09f-4124-9864-997823ecda17",
     "action": "set_power",
-    "value": {"on": true, "mode": "manual"},
+    "value": {"on": true, "mode": "manual", "source": "manual"},
     "expires_at": "2026-08-14T03:30:32Z",
     "idempotency_key": "manual-8cb4b99e"
   }
 }
 ```
 
-Firmware checks device identity, expiry, supported action/value, local
-interlocks and duplicate command ID before actuating.
+Firmware checks device identity, expiry, supported action/value, control
+source, mode priority and duplicate command ID before actuating. Automation
+commands carry `mode: "auto"` and a source such as `automation`, `vacancy`, or
+`pir_fallback`; urgency commands use `urgency`, `urgency_timeout`, or
+`manual_restore`. These values remain inside the existing versioned command
+envelope and topic structure.
 
 ## Command acknowledgement
 
@@ -272,14 +284,26 @@ and authenticated REST users.
 The supplied ESP32 sketch is represented by one gateway controlling three
 logical digital outputs. Each reported state contains `on` and `mode`
 (`auto` or `manual`); state messages are retained, while commands and
-acknowledgements are not. The active-LOW outputs preserve the tested PIR,
-temperature/humidity, and raw LDR ADC automation. PIR LOW forces all relays
-OFF, and an ON command is rejected if the PIR master reports no motion.
+acknowledgements are not. Output polarity is configured per device in
+`firmware/esp32/include/relay_config.h`: yellow lighting, fan, and AC are active
+HIGH (logical OFF drives LOW; logical ON drives HIGH). The `on` field
+retains its logical meaning; it is not a GPIO level or physical light feedback.
+Sensor acquisition runs every two seconds. Periodic telemetry/state snapshots
+wait for previous publications to receive broker acknowledgements, preventing
+an unbounded queue of old samples. Intermediate periodic snapshots may be
+skipped; command acknowledgements and immediate state reports are not gated.
+Broker acknowledgement is transport confirmation, not evidence that a device
+command was applied. Freshness still uses the original observation timestamp.
+The backend deterministic policy combines camera observations and fresh
+sensor telemetry and writes approved commands to the transactional outbox.
+Firmware only validates and applies these commands; PIR telemetry never
+directly overrides an output or blocks a manual command.
 
 This firmware supports only `set_power` and `set_mode`; it rejects
 `set_temperature`, `set_fan_speed`, and `set_brightness`. For this local relay
-adapter, an approved `set_power` value includes `{"on": true, "mode":
-"manual"}` so the output cannot be overwritten by the next automatic cycle.
+adapter, a manual `set_power` value includes `{"on": true, "mode":
+"manual", "source": "manual"}`. An automatic value uses `mode: "auto"` and a
+policy source. Per-device Manual mode is preserved across urgency operation.
 The frontend uses REST polling; it never connects to the broker. See
 [`firmware/esp32/README.md`](../firmware/esp32/README.md) for the local setup
 and low-voltage limitations.
