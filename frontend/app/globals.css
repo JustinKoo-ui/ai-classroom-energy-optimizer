@@ -74,6 +74,7 @@ button { color: inherit; }
   color: #fff;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
   z-index: 10;
 }
 .brand { display: flex; align-items: center; gap: 11px; color: #fff; text-decoration: none; font-weight: var(--weight-bold); letter-spacing: .16em; font-size: var(--text-card); }
@@ -85,6 +86,14 @@ button { color: inherit; }
 .sidebar__foot { margin-top: auto; padding: 16px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.05); display: grid; gap: 4px; }
 .sidebar__foot span, .sidebar__foot small { color: var(--text-on-dark); font-size: var(--text-xs); }
 .sidebar__foot strong { font-size: var(--text-sm); }
+/* Short windows (e.g. laptops with 125-150% Windows display scaling): tighten the
+   menu so all pages and the status box fit; the sidebar scrolls if they still don't. */
+@media (max-height: 700px) and (min-width: 761px) {
+  .sidebar { padding-top: 20px; padding-bottom: 16px; }
+  .sidebar nav { margin-top: 24px; gap: 3px; }
+  .sidebar nav a { padding: 9px 13px; }
+  .sidebar__foot { margin-top: 16px; padding: 12px; }
+}
 
 .dashboard-shell { margin-left: 224px; padding: 30px clamp(22px, 3vw, 48px) 64px; max-width: 1700px; }
 /* Focus moves here programmatically on page change; it is not a control. */
