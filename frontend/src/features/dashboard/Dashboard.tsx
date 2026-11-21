@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
+import { AIChat } from "@/src/components/AIChat";
 import { AIInsightPanel } from "@/src/components/AIInsightPanel";
 import { CameraPreview } from "@/src/components/CameraPreview";
 import { DeviceControlCard } from "@/src/components/DeviceControlCard";
@@ -23,6 +24,7 @@ const navigationItems = [
   { id: "analytics", label: "Analytics" },
   { id: "ai-insights", label: "AI insights" },
   { id: "environmental-analyst", label: "Environmental analyst" },
+  { id: "ai-chat", label: "AI chat" },
 ] as const;
 
 type SectionId = (typeof navigationItems)[number]["id"];
@@ -271,6 +273,11 @@ export function Dashboard() {
             instead, which stops its stream when you leave that page. */}
         <div hidden={activeSection !== "environmental-analyst"}>
           <EnvironmentalAnalyst classroomId={data.classroom_id} />
+        </div>
+
+        {/* Also kept mounted so the conversation survives switching pages. */}
+        <div hidden={activeSection !== "ai-chat"}>
+          <AIChat classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
         </div>
 
         <footer className="dashboard-footer">

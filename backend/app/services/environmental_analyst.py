@@ -22,7 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings
 from app.schemas.analyst import AnalystResponse, AnalystSections, ProviderReport
@@ -393,6 +393,28 @@ def _summary(report: AnalyticsReport, context: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _provider_ready(settings: Settings) -> bool:
+    """True only for a complete HTTPS OpenAI-compatible configuration."""
+    try:
+        endpoint = urlsplit(settings.analyst_api_url)
+        # Accessing port also validates malformed port strings.
+        _ = endpoint.port
+    except ValueError:
+        return False
+    return not (
+        settings.analyst_provider != "openai_compatible"
+        or not settings.analyst_model.strip()
+        or settings.analyst_api_key is None
+        or not settings.analyst_api_key.get_secret_value().strip()
+        or endpoint.scheme != "https"
+        or not endpoint.hostname
+        or endpoint.username
+        or endpoint.password
+        or endpoint.query
+        or endpoint.fragment
+    )
+
+
 class _ProviderFailure(Exception):
     def __init__(self, *, retryable: bool = False, limited: bool = False, delay: float = 0.5):
         self.retryable, self.limited, self.delay = retryable, limited, delay
@@ -465,24 +487,7 @@ class EnvironmentalAnalyst:
             )
 
         settings = self.settings
-        try:
-            endpoint = urlsplit(settings.analyst_api_url)
-            # Accessing port also validates malformed port strings.
-            _ = endpoint.port
-        except ValueError:
-            return unavailable()
-        if (
-            settings.analyst_provider != "openai_compatible"
-            or not settings.analyst_model.strip()
-            or settings.analyst_api_key is None
-            or not settings.analyst_api_key.get_secret_value().strip()
-            or endpoint.scheme != "https"
-            or not endpoint.hostname
-            or endpoint.username
-            or endpoint.password
-            or endpoint.query
-            or endpoint.fragment
-        ):
+        if not _provider_ready(settings):
             return unavailable()
         current = self._clock()
         for key in list(self._cache):
@@ -587,62 +592,74 @@ class EnvironmentalAnalyst:
                 _in_flight = False
 
     async def _request(self, client: httpx.AsyncClient, payload: dict[str, Any]) -> ProviderReport:
-        settings = self.settings
-        api_key = settings.analyst_api_key
-        if api_key is None:
-            raise _ProviderFailure()
-        for attempt in range(settings.analyst_max_retries + 1):
-            try:
-                async with asyncio.timeout(settings.analyst_timeout_seconds):
-                    async with client.stream(
-                        "POST",
-                        settings.analyst_api_url,
-                        json=payload,
-                        headers={"Authorization": f"Bearer {api_key.get_secret_value()}"},
-                    ) as response:
-                        if response.status_code != 200:
-                            if response.status_code == 429:
-                                body = await _read_bounded_body(response)
-                                # Return the real cooldown to the caller. Retrying after a
-                                # shortened wait only spends quota on another rejection.
-                                raise _ProviderFailure(
-                                    limited=True,
-                                    delay=_rate_limit_delay(response, body),
-                                )
-                            try:
-                                delay = float(response.headers.get("Retry-After", "0.5"))
-                            except ValueError:
-                                delay = 0.5
-                            raise _ProviderFailure(
-                                retryable=response.status_code >= 500,
-                                delay=min(2, max(0.1, delay)) if math.isfinite(delay) else 0.5,
-                            )
-                        body = await _read_bounded_body(response)
-                decoded = json.loads(body)
-                if not isinstance(decoded, dict):
-                    raise _ProviderFailure()
-                choices = decoded.get("choices")
-                if not isinstance(choices, list) or len(choices) != 1:
-                    raise _ProviderFailure()
-                choice = choices[0]
-                if not isinstance(choice, dict):
-                    raise _ProviderFailure()
-                message = choice.get("message", {})
-                if not isinstance(message, dict):
-                    raise _ProviderFailure()
-                if (
-                    choice.get("finish_reason") != "stop"
-                    or message.get("refusal")
-                    or message.get("tool_calls")
-                    or not isinstance(message.get("content"), str)
-                ):
-                    raise _ProviderFailure()
-                return ProviderReport.model_validate_json(message["content"], strict=True)
-            except (httpx.TimeoutException, httpx.NetworkError, TimeoutError):
-                failure = _ProviderFailure(retryable=True, delay=min(2, 0.5 * 2**attempt))
-            except _ProviderFailure as exc:
-                failure = exc
-            if not failure.retryable or attempt >= settings.analyst_max_retries:
-                raise failure
-            await self._sleep(failure.delay)
+        return await _request_structured(
+            self.settings, client, payload, ProviderReport, self._sleep
+        )
+
+
+async def _request_structured[ModelT: BaseModel](
+    settings: Settings,
+    client: httpx.AsyncClient,
+    payload: dict[str, Any],
+    model: type[ModelT],
+    sleep: Callable[[float], Awaitable[None]],
+) -> ModelT:
+    """POST one bounded chat completion and validate it strictly against model."""
+    api_key = settings.analyst_api_key
+    if api_key is None:
         raise _ProviderFailure()
+    for attempt in range(settings.analyst_max_retries + 1):
+        try:
+            async with asyncio.timeout(settings.analyst_timeout_seconds):
+                async with client.stream(
+                    "POST",
+                    settings.analyst_api_url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {api_key.get_secret_value()}"},
+                ) as response:
+                    if response.status_code != 200:
+                        if response.status_code == 429:
+                            body = await _read_bounded_body(response)
+                            # Return the real cooldown to the caller. Retrying after a
+                            # shortened wait only spends quota on another rejection.
+                            raise _ProviderFailure(
+                                limited=True,
+                                delay=_rate_limit_delay(response, body),
+                            )
+                        try:
+                            delay = float(response.headers.get("Retry-After", "0.5"))
+                        except ValueError:
+                            delay = 0.5
+                        raise _ProviderFailure(
+                            retryable=response.status_code >= 500,
+                            delay=min(2, max(0.1, delay)) if math.isfinite(delay) else 0.5,
+                        )
+                    body = await _read_bounded_body(response)
+            decoded = json.loads(body)
+            if not isinstance(decoded, dict):
+                raise _ProviderFailure()
+            choices = decoded.get("choices")
+            if not isinstance(choices, list) or len(choices) != 1:
+                raise _ProviderFailure()
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                raise _ProviderFailure()
+            message = choice.get("message", {})
+            if not isinstance(message, dict):
+                raise _ProviderFailure()
+            if (
+                choice.get("finish_reason") != "stop"
+                or message.get("refusal")
+                or message.get("tool_calls")
+                or not isinstance(message.get("content"), str)
+            ):
+                raise _ProviderFailure()
+            return model.model_validate_json(message["content"], strict=True)
+        except (httpx.TimeoutException, httpx.NetworkError, TimeoutError):
+            failure = _ProviderFailure(retryable=True, delay=min(2, 0.5 * 2**attempt))
+        except _ProviderFailure as exc:
+            failure = exc
+        if not failure.retryable or attempt >= settings.analyst_max_retries:
+            raise failure
+        await sleep(failure.delay)
+    raise _ProviderFailure()

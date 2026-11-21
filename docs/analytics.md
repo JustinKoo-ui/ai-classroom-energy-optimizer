@@ -237,7 +237,43 @@ minute. All 328 backend tests passed after the compaction/cooldown changes.
   mandatory disclosures and retry delay. Unset server token returns 503;
   missing/wrong client token 401; unknown classroom 404; invalid selection 422.
 
-Neither route can create commands or change automation.
+- `POST /api/v1/classrooms/{id}/analytics/chat` (AI chat page) uses the same
+  report token and the same server-calculated report and aggregate context.
+  Body: `{"message":"...","history":[{"role":"user","content":"..."}],
+  "date":null,"period":"day"}`. Limits: message 1-500 characters after
+  trimming; at most 6 history turns of up to 2000 characters, roles `user` or
+  `assistant` only; unknown fields are rejected (422). Response: `status`
+  (`ready`, `unavailable`, `rate_limited`), `message`, `answer`, `on_topic`,
+  `suggested_questions` (at most 3), `generated_at`, `metrics_as_of`, `period`,
+  `data_complete`, `model`, `retry_after_seconds`. Same 401/403/404/422/503
+  rules as the report.
+
+None of these routes can create commands or change automation.
+
+### AI chat behaviour and limits
+
+- **Read-only by construction.** The chat service receives an already-built
+  report and returns text. It has no MQTT, device, automation or database
+  access and sends no tool definitions; replies containing tool calls are
+  rejected. Asking it to switch a device only yields an explanation that
+  controls are on the Devices page.
+- **Grounded in server data.** Every message sends the same summary as the
+  report (with comparison percentages withheld for incomplete periods) and
+  requires the provider to echo its SHA-256 digest. Off-topic questions get a
+  fixed reply. Replies that echo the provider key or report token are dropped.
+- **Context size.** The summary is resent with every message, so summaries over
+  16 KB drop their hourly series (totals stay). Each message still costs
+  several thousand provider tokens; on Groq's free tier the tokens-per-minute
+  limit is usually reached before the request limit.
+- **Shared quota.** Chat and report share `ANALYST_REQUESTS_PER_MINUTE` and the
+  one-request-at-a-time rule, because they spend the same provider quota. The
+  default of 3 is low for a conversation; raise it if your provider allows.
+- **Browser-supplied history is untrusted.** It is length-limited context and
+  cannot change the system rules or the data block. Nothing is stored on the
+  server or in browser storage; clearing or reloading the page ends the chat.
+- **Proxy.** The Cloudflare Worker allows the chat route with its own 32 KiB
+  body limit (the report keeps 4096 bytes); the browser trims the oldest turns
+  to fit.
 
 ## Validation and limits
 

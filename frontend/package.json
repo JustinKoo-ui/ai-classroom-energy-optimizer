@@ -17,6 +17,7 @@
     "test:proxy": "node --experimental-strip-types --test tests/monitoring-proxy.test.mjs",
     "test:hardware": "node --experimental-strip-types --test tests/hardware-control-service.test.mjs",
     "test:camera": "node --experimental-strip-types --test tests/camera-preview-service.test.mjs",
+    "test:chat": "node --experimental-strip-types --test tests/chat-history.test.mjs",
     "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   },

@@ -17,6 +17,8 @@ export interface MonitoringEnv {
 }
 
 const MAX_REPORT_BYTES = 4096;
+// Chat bodies carry a question plus a few earlier turns for context.
+const MAX_CHAT_BYTES = 32_768;
 const MAX_CAMERA_FRAME_BYTES = 2 * 1024 * 1024;
 const CAMERA_STREAM_TYPE = "multipart/x-mixed-replace; boundary=classroom-frame";
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -45,7 +47,7 @@ function accessConfiguration(env: MonitoringEnv) {
   }
 }
 
-async function reportBody(request: Request): Promise<Uint8Array | null> {
+async function reportBody(request: Request, limit = MAX_REPORT_BYTES): Promise<Uint8Array | null> {
   const reader = request.body?.getReader();
   if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
@@ -54,7 +56,7 @@ async function reportBody(request: Request): Promise<Uint8Array | null> {
     const { value, done } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_REPORT_BYTES) {
+    if (size > limit) {
       await reader.cancel();
       return null;
     }
@@ -108,16 +110,18 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     const isCamera = isCameraStream || isCameraSnapshot;
     const readPaths = new Set([`${base}/telemetry/latest`, `${base}/occupancy/current`, `${base}/analytics`, `${base}/camera/frame`, `${base}/camera/stream`]);
     const reportPath = `${base}/analytics/report`;
+    const chatPath = `${base}/analytics/chat`;
+    const isAiPost = url.pathname === reportPath || url.pathname === chatPath;
     const commandMatch = url.pathname.match(new RegExp(`^/api/v1/devices/(${UUID_PATTERN})/commands$`));
     const isCommand = commandMatch !== null && RELAY_IDS.has(commandMatch[1]);
     const isControl = url.pathname === `${base}/devices` || url.pathname === `${base}/urgency`
       || isCommand || new RegExp(`^/api/v1/commands/${UUID_PATTERN}$`).test(url.pathname);
     const controlEnabled = env.CLASSROOM_REMOTE_CONTROL_ENABLED === "true";
     if (!new RegExp(`^${UUID_PATTERN}$`).test(classroom)
-      || (!readPaths.has(url.pathname) && url.pathname !== reportPath && !(isControl && controlEnabled))) {
+      || (!readPaths.has(url.pathname) && !isAiPost && !(isControl && controlEnabled))) {
       return error(404, "This API route is not available through the monitoring website.");
     }
-    const expectedMethod = url.pathname === reportPath || isCommand ? "POST" : "GET";
+    const expectedMethod = isAiPost || isCommand ? "POST" : "GET";
     if (request.method !== expectedMethod) return error(405, "This API method is not allowed.");
     if (isControl && url.search) return error(400, "Control routes do not accept query parameters.");
     if (isCamera && url.search) return error(400, "Camera preview does not accept query parameters.");
@@ -175,14 +179,14 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     }
 
     let body: Uint8Array | undefined;
-    const requestLabel = isCommand ? "Control" : "AI report";
+    const requestLabel = isCommand ? "Control" : url.pathname === chatPath ? "AI chat" : "AI report";
     if (request.method === "POST") {
       if (request.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "application/json") {
         return error(415, `${requestLabel} requests must use application/json.`);
       }
       let bytes: Uint8Array | null;
       try {
-        bytes = await reportBody(request);
+        bytes = await reportBody(request, url.pathname === chatPath ? MAX_CHAT_BYTES : MAX_REPORT_BYTES);
       } catch {
         return error(400, `The ${requestLabel.toLowerCase()} request body could not be read.`);
       }
@@ -233,7 +237,7 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
         // Camera sessions close after 60 seconds on the backend. Keep the
         // cancellation budget long enough to deliver the entire session.
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(
-          isCameraStream ? 75_000 : url.pathname === reportPath ? 90_000 : 15_000,
+          isCameraStream ? 75_000 : isAiPost ? 90_000 : 15_000,
         )]),
       }));
       if (isCameraStream && response.status === 200) {

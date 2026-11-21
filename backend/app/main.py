@@ -43,6 +43,7 @@ from app.schemas.mqtt import (
     OccupancyObservationPayload,
 )
 from app.services.camera_preview import CameraPreview
+from app.services.energy_chat import EnergyChat
 from app.services.environmental_analyst import EnvironmentalAnalyst
 from app.services.occupancy_automation import evaluate_local_automation
 
@@ -182,6 +183,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sessions = sessions
     app.state.analytics_settings = settings
     app.state.environmental_analyst = EnvironmentalAnalyst(settings)
+    app.state.energy_chat = EnergyChat(settings)
     app.state.camera_preview = CameraPreview(
         settings.camera_source, enabled=settings.camera_preview_enabled
     )

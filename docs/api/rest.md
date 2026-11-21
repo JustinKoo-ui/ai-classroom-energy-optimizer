@@ -12,6 +12,10 @@ contract once routes are implemented.
 - `POST /classrooms/{id}/analytics/report`: loopback/private bridge plus a separate server
   `ANALYST_ACCESS_TOKEN` Bearer token; body `{date, period, refresh}`. Returns
   validated optional commentary; numerical analytics remain independent.
+- `POST /classrooms/{id}/analytics/chat`: same loopback/private bridge and
+  `ANALYST_ACCESS_TOKEN` as the report; body `{message, history, date, period}`.
+  Read-only questions about recorded data; returns `{status, answer,
+  suggested_questions, ...}`. It cannot create commands or change automation.
 
 See [analytics methodology and full contract](../analytics.md). This local
 increment does not implement the production JWT/RBAC endpoints listed below.
