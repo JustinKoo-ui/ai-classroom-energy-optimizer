@@ -11,6 +11,8 @@ from app.schemas.common import ContractModel
 
 MAX_QUESTION_CHARS = 500
 MAX_TURN_CHARS = 2000
+MAX_ANSWER_CHARS = 4000
+MAX_SUGGESTION_CHARS = 160
 MAX_HISTORY_TURNS = 6
 MAX_SUGGESTIONS = 3
 
@@ -20,7 +22,6 @@ Question = Annotated[
 TurnText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TURN_CHARS)
 ]
-Suggestion = Annotated[str, Field(min_length=1, max_length=160)]
 
 
 class ChatTurn(ContractModel):
@@ -40,12 +41,16 @@ class ChatRequest(ContractModel):
 
 
 class ProviderChatReply(ContractModel):
-    """Strict structured output requested from the provider."""
+    """Structured output requested from the provider.
+
+    Providers do not reliably enforce length or count limits, so suggestions are
+    accepted as given and trimmed by the service rather than failing the answer.
+    """
 
     metrics_digest: str
     on_topic: bool
-    answer: Annotated[str, Field(min_length=1, max_length=MAX_TURN_CHARS)]
-    suggested_questions: Annotated[list[Suggestion], Field(max_length=MAX_SUGGESTIONS)]
+    answer: Annotated[str, Field(min_length=1, max_length=MAX_ANSWER_CHARS)]
+    suggested_questions: list[str]
 
 
 class ChatResponse(ContractModel):

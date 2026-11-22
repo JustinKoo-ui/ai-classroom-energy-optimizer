@@ -273,3 +273,73 @@ async def test_incomplete_period_is_flagged_and_withholds_comparison_percentages
     total = data_block(seen[0])["summary"]["total_energy"]
     assert total["final_savings_pct"] is None
     assert total["provisional_difference_pct"] is None
+
+
+async def test_extra_long_or_duplicate_suggestions_are_trimmed_not_fatal():
+    many = [
+        "Which appliance ran longest?",
+        "Which appliance ran longest?",
+        "x" * 161,
+        "   ",
+        "When was the room empty?",
+        "How warm was it?",
+        "A fourth valid question?",
+    ]
+    service = EnergyChat(
+        settings(), transport=provider([], change=lambda c: c.update(suggested_questions=many))
+    )
+    result = await ask(service)
+    assert result.status == "ready"
+    assert result.suggested_questions == [
+        "Which appliance ran longest?",
+        "When was the room empty?",
+        "How warm was it?",
+    ]
+
+
+async def test_provider_errors_are_logged_without_credentials_or_generated_text(caplog):
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "json_validate_failed",
+                    "message": "Generated JSON does not match the expected schema.",
+                    "failed_generation": f"secret model output {API_SECRET}",
+                }
+            },
+        )
+
+    result = await ask(EnergyChat(settings(), transport=httpx.MockTransport(handler)))
+    assert result.status == "unavailable"
+    assert "HTTP 400 (json_validate_failed: Generated JSON does not match" in caplog.text
+    assert API_SECRET not in caplog.text
+    assert "secret model output" not in caplog.text
+
+
+async def test_truncated_reply_logs_finish_reason_and_token_usage(caplog):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"finish_reason": "length", "message": {"content": '{"a":'}}],
+                "usage": {"prompt_tokens": 5100, "completion_tokens": 3000},
+            },
+        )
+
+    result = await ask(EnergyChat(settings(), transport=httpx.MockTransport(handler)))
+    assert result.status == "unavailable"
+    assert "finish_reason=length" in caplog.text
+    assert "'prompt_tokens': 5100" in caplog.text
+
+
+async def test_validation_failures_log_field_names_not_generated_text(caplog):
+    service = EnergyChat(
+        settings(),
+        transport=provider([], change=lambda c: c.update(answer="", note="private words")),
+    )
+    result = await ask(service)
+    assert result.status == "unavailable"
+    assert "failed validation" in caplog.text
+    assert "answer" in caplog.text
+    assert "private words" not in caplog.text

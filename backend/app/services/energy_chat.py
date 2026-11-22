@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -25,8 +26,16 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.schemas.analytics import AnalyticsReport
-from app.schemas.energy_chat import ChatResponse, ChatTurn, ProviderChatReply
+from app.schemas.energy_chat import (
+    MAX_SUGGESTION_CHARS,
+    MAX_SUGGESTIONS,
+    ChatResponse,
+    ChatTurn,
+    ProviderChatReply,
+)
 from app.services import environmental_analyst as analyst
+
+logger = logging.getLogger(__name__)
 
 # Each message resends the room data, so keep it well inside small provider token
 # budgets. Larger summaries drop their hourly series first.
@@ -66,6 +75,12 @@ Rules:
 - suggested_questions: up to 3 short follow-up questions that DATA can answer.
 - Copy metrics_digest exactly.
 """
+
+
+def _suggestions(values: list[str]) -> list[str]:
+    cleaned = (value.strip() for value in values)
+    usable = [value for value in cleaned if 0 < len(value) <= MAX_SUGGESTION_CHARS]
+    return list(dict.fromkeys(usable))[:MAX_SUGGESTIONS]
 
 
 def _chat_summary(report: AnalyticsReport, context: dict[str, Any]) -> dict[str, Any]:
@@ -188,18 +203,21 @@ class EnergyChat:
                     settings, client, payload, ProviderChatReply, self._sleep
                 )
             if not hmac.compare_digest(reply.metrics_digest, digest):
+                logger.warning("AI chat reply rejected: metrics digest did not match")
                 return unavailable()
-            visible = " ".join([reply.answer, *reply.suggested_questions])
+            suggestions = _suggestions(reply.suggested_questions)
+            visible = " ".join([reply.answer, *suggestions])
             for secret in (settings.analyst_api_key, settings.analyst_access_token):
                 value = secret.get_secret_value() if secret is not None else ""
                 if value and value in visible:
+                    logger.warning("AI chat reply rejected: it echoed a configured secret")
                     return unavailable()
             return ChatResponse(
                 status="ready",
                 message="Answer based on recorded runtime and assumed wattages.",
                 answer=reply.answer if reply.on_topic else OFF_TOPIC_ANSWER,
                 on_topic=reply.on_topic,
-                suggested_questions=reply.suggested_questions,
+                suggested_questions=suggestions,
                 generated_at=datetime.now(UTC),
                 metrics_as_of=report.as_of,
                 period=report.period,
@@ -212,8 +230,19 @@ class EnergyChat:
             return unavailable(
                 limited=exc.limited, retry=math.ceil(exc.delay) if exc.limited else None
             )
-        except (TimeoutError, httpx.HTTPError, ValidationError, ValueError, TypeError, KeyError):
+        except ValidationError as exc:
+            # Field locations and error types only; never the generated text.
+            logger.warning(
+                "AI chat reply failed validation: %s",
+                [(".".join(map(str, error["loc"])), error["type"]) for error in exc.errors()],
+            )
+            return unavailable()
+        except (TimeoutError, httpx.HTTPError) as exc:
+            logger.warning("AI chat provider request failed: %s", type(exc).__name__)
+            return unavailable()
+        except (ValueError, TypeError, KeyError) as exc:
             # Never expose provider bodies, transport details, prompts or credentials.
+            logger.warning("AI chat reply could not be processed: %s", type(exc).__name__)
             return unavailable()
         finally:
             self._release()

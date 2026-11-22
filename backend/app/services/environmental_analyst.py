@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import math
 import re
 import threading
@@ -27,6 +28,8 @@ from pydantic import BaseModel, ValidationError
 from app.core.config import Settings
 from app.schemas.analyst import AnalystResponse, AnalystSections, ProviderReport
 from app.schemas.analytics import AnalyticsReport
+
+logger = logging.getLogger(__name__)
 
 MAX_BYTES = 100_000
 MAX_HOURLY_BUCKETS = 48
@@ -393,6 +396,23 @@ def _summary(report: AnalyticsReport, context: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _provider_error_summary(body: bytes) -> str:
+    """Short, credential-free description of a provider error for server logs.
+
+    Only the error type/code and the first 200 characters of its message are kept;
+    generated text (for example Groq's failed_generation) is never logged.
+    """
+    try:
+        error = json.loads(body).get("error", {})
+    except (ValueError, AttributeError):
+        return "unparseable error body"
+    if not isinstance(error, dict):
+        return "no error details"
+    kind = error.get("code") or error.get("type") or "unknown"
+    message = error.get("message") if isinstance(error.get("message"), str) else ""
+    return f"{kind}: {message[:200]}"
+
+
 def _provider_ready(settings: Settings) -> bool:
     """True only for a complete HTTPS OpenAI-compatible configuration."""
     try:
@@ -627,6 +647,13 @@ async def _request_structured[ModelT: BaseModel](
                                 delay=_rate_limit_delay(response, body),
                             )
                         try:
+                            detail = _provider_error_summary(await _read_bounded_body(response))
+                        except _ProviderFailure:
+                            detail = "oversized error body"
+                        logger.warning(
+                            "AI provider returned HTTP %s (%s)", response.status_code, detail
+                        )
+                        try:
                             delay = float(response.headers.get("Retry-After", "0.5"))
                         except ValueError:
                             delay = 0.5
@@ -653,6 +680,17 @@ async def _request_structured[ModelT: BaseModel](
                 or message.get("tool_calls")
                 or not isinstance(message.get("content"), str)
             ):
+                usage = decoded.get("usage")
+                logger.warning(
+                    "AI provider reply rejected: finish_reason=%s refusal=%s tool_calls=%s "
+                    "usage=%s",
+                    choice.get("finish_reason"),
+                    bool(message.get("refusal")),
+                    bool(message.get("tool_calls")),
+                    {key: usage.get(key) for key in ("prompt_tokens", "completion_tokens")}
+                    if isinstance(usage, dict)
+                    else None,
+                )
                 raise _ProviderFailure()
             return model.model_validate_json(message["content"], strict=True)
         except (httpx.TimeoutException, httpx.NetworkError, TimeoutError):
