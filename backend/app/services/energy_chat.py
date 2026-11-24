@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Each message resends the room data, so keep it well inside small provider token
 # budgets. Larger summaries drop their hourly series first.
-MAX_CONTEXT_BYTES = 16_000
+MAX_CONTEXT_BYTES = 10_000
 OFF_TOPIC_ANSWER = (
     "I can only help with this room's recorded data: device runtime, estimated energy, "
     "temperature, humidity, light, occupancy and how to use the appliances more efficiently."
@@ -179,6 +179,11 @@ class EnergyChat:
                     *({"role": turn.role, "content": turn.content} for turn in history),
                     {"role": "user", "content": question},
                 ],
+                **(
+                    {"reasoning_effort": settings.analyst_reasoning_effort}
+                    if settings.analyst_reasoning_effort
+                    else {}
+                ),
                 "response_format": {
                     "type": "json_schema",
                     "json_schema": {

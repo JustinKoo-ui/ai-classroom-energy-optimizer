@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from pydantic import Field, SecretStr
@@ -126,6 +127,12 @@ class Settings(BaseSettings):
         alias="ANALYST_CACHE_TTL_SECONDS",
         ge=0,
         le=3600,
+    )
+    # Optional "low" | "medium" | "high" for reasoning models such as Groq's gpt-oss.
+    # Sent by the AI chat only when set; lower effort spends fewer tokens per answer.
+    # Leave empty for models that do not accept reasoning_effort.
+    analyst_reasoning_effort: Literal["", "low", "medium", "high"] = Field(
+        default="", alias="ANALYST_REASONING_EFFORT"
     )
 
     model_config = SettingsConfigDict(

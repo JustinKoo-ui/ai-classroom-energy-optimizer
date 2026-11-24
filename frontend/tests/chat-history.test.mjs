@@ -12,7 +12,11 @@ test("keeps only the newest turns, in order", () => {
   const transcript = turns(10).map((turn, index) => ({ ...turn, content: `turn ${index}` }));
   const request = buildChatRequest("Next?", transcript, "day");
   assert.equal(request.history.length, MAX_HISTORY_TURNS);
-  assert.deepEqual(request.history.map((turn) => turn.content), ["turn 4", "turn 5", "turn 6", "turn 7", "turn 8", "turn 9"]);
+  assert.deepEqual(
+    request.history.map((turn) => turn.content),
+    transcript.slice(-MAX_HISTORY_TURNS).map((turn) => turn.content),
+  );
+  assert.equal(request.history.at(-1).content, "turn 9");
   assert.deepEqual(request, { ...request, message: "Next?", period: "day", date: null });
 });
 
@@ -34,8 +38,14 @@ test("never splits an emoji when clipping", () => {
 });
 
 test("drops the oldest turns until multi-byte text fits the proxy body budget", () => {
-  const request = buildChatRequest("问题".repeat(250), turns(6, "能源".repeat(1000)), "month");
+  const request = buildChatRequest("问题".repeat(250), turns(6, "能源".repeat(1000)), "month", null, 6000);
+  assert.ok(bytes(request) <= 6000);
+  assert.ok(request.history.length < MAX_HISTORY_TURNS && request.history.length > 0);
+  assert.equal(request.history.at(-1).content, "能源".repeat(MAX_TURN_CHARS / 2));
+});
+
+test("the default budget fits the largest allowed request", () => {
+  const request = buildChatRequest("问".repeat(MAX_QUESTION_CHARS), turns(10, "能".repeat(5000)), "day");
+  assert.equal(request.history.length, MAX_HISTORY_TURNS);
   assert.ok(bytes(request) <= MAX_BODY_BYTES);
-  assert.ok(request.history.length < 6 && request.history.length > 0);
-  assert.equal(request.history.at(-1).content, "能源".repeat(1000));
 });

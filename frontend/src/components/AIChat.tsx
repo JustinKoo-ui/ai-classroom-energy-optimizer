@@ -19,21 +19,58 @@ const STARTER_QUESTIONS = [
   "How can we use the air conditioner more efficiently?",
 ];
 
+/**
+ * Floating AI assistant: a round button at the bottom-right of every page that
+ * opens a chat panel. It stays mounted while closed, so the conversation and
+ * the typed token survive both closing the panel and switching pages.
+ */
 export function AIChat({ classroomId }: { classroomId: UUID }) {
-  // The access token stays in React memory only, like the analyst report token.
-  // It is not the provider API key and is never written to browser storage.
+  // The access token stays in React memory only. It is not the provider API key
+  // and is never written to browser storage.
   const [accessToken, setAccessToken] = useState("");
   const [period, setPeriod] = useState<AnalyticsPeriod>("day");
   const [draft, setDraft] = useState("");
+  const [open, setOpen] = useState(false);
+  const [seenCount, setSeenCount] = useState(0);
   const { messages, error, loading, send, clear } = useAIChat(classroomId);
   const logRef = useRef<HTMLDivElement>(null);
+  const tokenRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const bubbleRef = useRef<HTMLButtonElement>(null);
   const tokenMissing = !accessToken.trim();
   const lastReply = messages.at(-1)?.reply;
+  const unread = !open && messages.length > seenCount;
 
   useEffect(() => {
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
-  }, [messages, loading]);
+  }, [messages, loading, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    // Focus the first thing the person needs: the token, then the question box.
+    (tokenRef.current?.value.trim() ? inputRef.current : tokenRef.current)?.focus();
+  }, [open]);
+
+  function setPanel(next: boolean) {
+    setOpen(next);
+    setSeenCount(messages.length);
+    if (!next) bubbleRef.current?.focus();
+  }
+
+  // Escape closes the panel from anywhere while it is open.
+  const messageCount = messages.length;
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      setSeenCount(messageCount);
+      bubbleRef.current?.focus();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, messageCount]);
 
   async function ask(question: string) {
     if (tokenMissing || loading || !question.trim()) return;
@@ -46,7 +83,7 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
     void ask(draft);
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
       void ask(draft);
@@ -54,87 +91,116 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
   }
 
   return (
-    <section id="ai-chat" className="ai-chat" aria-labelledby="ai-chat-title">
-      <div className="section-heading">
-        <div><p className="eyebrow">Ask about your room</p><h2 id="ai-chat-title">AI energy assistant</h2></div>
-        <p>Read-only · it cannot switch devices</p>
-      </div>
+    <>
+      <div
+        id="ai-chat-panel"
+        className="ai-chat-panel"
+        role="dialog"
+        aria-modal="false"
+        aria-labelledby="ai-chat-title"
+        hidden={!open}
+      >
+        <header className="ai-chat-panel__head">
+          <div>
+            <p className="eyebrow">Ask about your room · read-only</p>
+            <h2 id="ai-chat-title">AI energy assistant</h2>
+          </div>
+          <button type="button" className="ai-chat-panel__close" onClick={() => setPanel(false)} aria-label="Close AI energy assistant">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+          </button>
+        </header>
 
-      <div className="analyst-toolbar ai-chat__setup">
-        <label>Data period
-          <select value={period} onChange={(event) => setPeriod(event.target.value as AnalyticsPeriod)}>
-            {Object.entries(PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
-        </label>
-        <label className="ai-chat__token">Report access token
-          <input type="password" autoComplete="off" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} aria-describedby="ai-chat-token-help" />
-        </label>
-        <button type="button" onClick={clear} disabled={messages.length === 0 && !error}>Clear chat</button>
-        <small id="ai-chat-token-help">The same separate token used by the Environmental analyst. Held in memory for this page session only.</small>
-      </div>
+        <div className="ai-chat__setup">
+          <label>Data
+            <select value={period} onChange={(event) => setPeriod(event.target.value as AnalyticsPeriod)}>
+              {Object.entries(PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label className="ai-chat__token">Access token
+            <input ref={tokenRef} type="password" autoComplete="off" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} aria-describedby="ai-chat-token-help" />
+          </label>
+          <button type="button" onClick={clear} disabled={messages.length === 0 && !error}>Clear</button>
+          <small id="ai-chat-token-help">The report access token set on your backend (not the AI provider key). Kept in memory only.</small>
+        </div>
 
-      <div className="ai-chat__log" ref={logRef} role="log" aria-live="polite" aria-label="Conversation with the AI energy assistant">
-        {messages.length === 0 && !loading && (
-          <div className="ai-chat__empty">
-            <strong>Ask anything about this room&apos;s recorded data</strong>
-            <p>The assistant reads the same recorded runtime, assumed-wattage energy estimates, sensor averages and occupancy samples as the Environmental analyst, explains what they mean, and suggests better habits.</p>
-            <div className="ai-chat__chips">
-              {STARTER_QUESTIONS.map((question) => (
-                <button key={question} type="button" disabled={tokenMissing} onClick={() => void ask(question)}>{question}</button>
-              ))}
+        <div className="ai-chat__log" ref={logRef} role="log" aria-live="polite" aria-label="Conversation with the AI energy assistant">
+          {messages.length === 0 && !loading && (
+            <div className="ai-chat__empty">
+              <strong>Ask about this room&apos;s recorded data</strong>
+              <p>It reads recorded appliance runtime, assumed-wattage energy estimates, sensor averages and occupancy samples, explains what they mean and suggests better habits. It cannot switch devices.</p>
+              <div className="ai-chat__chips">
+                {STARTER_QUESTIONS.map((question) => (
+                  <button key={question} type="button" disabled={tokenMissing} onClick={() => void ask(question)}>{question}</button>
+                ))}
+              </div>
+              {tokenMissing && <small>Enter the access token above to start.</small>}
             </div>
-            {tokenMissing && <small>Enter the report access token above to start.</small>}
+          )}
+          {messages.map((message) => (
+            <article key={message.id} className={`ai-chat__message ai-chat__message--${message.role}`}>
+              <span className="ai-chat__author">{message.role === "user" ? "You" : "Assistant"}</span>
+              <p>{message.content}</p>
+              {message.reply && (
+                <span className="ai-chat__meta">
+                  {message.reply.period ? `${PERIOD_LABELS[message.reply.period]} data` : "Room data"}
+                  {message.reply.metrics_as_of && ` · as of ${new Date(message.reply.metrics_as_of).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                  {message.reply.data_complete === false && " · period in progress or coverage incomplete"}
+                </span>
+              )}
+            </article>
+          ))}
+          {loading && <p className="ai-chat__thinking" role="status">Assistant is reading your room data…</p>}
+        </div>
+
+        {error && <div className="inline-alert ai-chat__error" role="alert">{error}</div>}
+
+        {lastReply && lastReply.suggested_questions.length > 0 && !loading && (
+          <div className="ai-chat__chips ai-chat__chips--follow-up" aria-label="Suggested follow-up questions">
+            {lastReply.suggested_questions.map((question) => (
+              <button key={question} type="button" disabled={tokenMissing} onClick={() => void ask(question)}>{question}</button>
+            ))}
           </div>
         )}
-        {messages.map((message) => (
-          <article key={message.id} className={`ai-chat__message ai-chat__message--${message.role}`}>
-            <span className="ai-chat__author">{message.role === "user" ? "You" : "Assistant"}</span>
-            <p>{message.content}</p>
-            {message.reply && (
-              <span className="ai-chat__meta">
-                {message.reply.period ? `${PERIOD_LABELS[message.reply.period]} data` : "Room data"}
-                {message.reply.metrics_as_of && ` · as of ${new Date(message.reply.metrics_as_of).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
-                {message.reply.data_complete === false && " · period in progress or coverage incomplete"}
-              </span>
-            )}
-          </article>
-        ))}
-        {loading && <p className="ai-chat__thinking" role="status">Assistant is reading your room data…</p>}
+
+        <form className="ai-chat__composer" onSubmit={onSubmit}>
+          <label htmlFor="ai-chat-input" className="ai-chat__visually-hidden">Your question</label>
+          <textarea
+            ref={inputRef}
+            id="ai-chat-input"
+            rows={2}
+            maxLength={MAX_QUESTION_CHARS}
+            value={draft}
+            placeholder={tokenMissing ? "Enter the access token first" : "Ask about energy, appliances, comfort…"}
+            disabled={tokenMissing}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={onComposerKeyDown}
+            aria-describedby="ai-chat-input-help"
+          />
+          <div className="ai-chat__composer-foot">
+            <small id="ai-chat-input-help">Enter to send · Shift + Enter new line · {draft.length}/{MAX_QUESTION_CHARS}</small>
+            <button type="submit" disabled={tokenMissing || loading || !draft.trim()}>{loading ? "Waiting…" : "Send"}</button>
+          </div>
+        </form>
+
+        <p className="ai-chat__note">Energy figures are estimates (recorded ON time × assumed wattage); no meter is connected. AI answers can be wrong.</p>
       </div>
 
-      {error && <div className="inline-alert" role="alert">{error}</div>}
-
-      {lastReply && lastReply.suggested_questions.length > 0 && !loading && (
-        <div className="ai-chat__chips ai-chat__chips--follow-up" aria-label="Suggested follow-up questions">
-          {lastReply.suggested_questions.map((question) => (
-            <button key={question} type="button" disabled={tokenMissing} onClick={() => void ask(question)}>{question}</button>
-          ))}
-        </div>
-      )}
-
-      <form className="ai-chat__composer" onSubmit={onSubmit}>
-        <label htmlFor="ai-chat-input" className="ai-chat__visually-hidden">Your question</label>
-        <textarea
-          id="ai-chat-input"
-          rows={2}
-          maxLength={MAX_QUESTION_CHARS}
-          value={draft}
-          placeholder={tokenMissing ? "Enter the access token above first" : "Ask about energy, appliances, comfort or occupancy…"}
-          disabled={tokenMissing}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={onKeyDown}
-          aria-describedby="ai-chat-input-help"
-        />
-        <div className="ai-chat__composer-foot">
-          <small id="ai-chat-input-help">Enter to send · Shift + Enter for a new line · {draft.length}/{MAX_QUESTION_CHARS}</small>
-          <button type="submit" disabled={tokenMissing || loading || !draft.trim()}>{loading ? "Waiting…" : "Send"}</button>
-        </div>
-      </form>
-
-      <p className="ai-chat__note">
-        Energy figures are estimates from recorded ON time × assumed wattage; no electricity meter is connected.
-        AI answers can be wrong, so check important figures on the Environmental analyst page.
-      </p>
-    </section>
+      <button
+        ref={bubbleRef}
+        type="button"
+        className="ai-chat-bubble"
+        aria-expanded={open}
+        aria-controls="ai-chat-panel"
+        aria-label={open ? "Close AI energy assistant" : unread ? "Open AI energy assistant, new reply" : "Open AI energy assistant"}
+        onClick={() => setPanel(!open)}
+      >
+        {open ? (
+          <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
+        ) : (
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z" fill="currentColor" /><circle cx="8.5" cy="9.5" r="1.2" fill="var(--green-deep)" /><circle cx="12" cy="9.5" r="1.2" fill="var(--green-deep)" /><circle cx="15.5" cy="9.5" r="1.2" fill="var(--green-deep)" /></svg>
+        )}
+        {(unread || (loading && !open)) && <span className="ai-chat-bubble__dot" aria-hidden="true" />}
+      </button>
+    </>
   );
 }

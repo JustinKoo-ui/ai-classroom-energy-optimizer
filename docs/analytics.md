@@ -237,7 +237,7 @@ minute. All 328 backend tests passed after the compaction/cooldown changes.
   mandatory disclosures and retry delay. Unset server token returns 503;
   missing/wrong client token 401; unknown classroom 404; invalid selection 422.
 
-- `POST /api/v1/classrooms/{id}/analytics/chat` (AI chat page) uses the same
+- `POST /api/v1/classrooms/{id}/analytics/chat` (floating AI assistant) uses the same
   report token and the same server-calculated report and aggregate context.
   Body: `{"message":"...","history":[{"role":"user","content":"..."}],
   "date":null,"period":"day"}`. Limits: message 1-500 characters after
@@ -262,9 +262,11 @@ None of these routes can create commands or change automation.
   requires the provider to echo its SHA-256 digest. Off-topic questions get a
   fixed reply. Replies that echo the provider key or report token are dropped.
 - **Context size.** The summary is resent with every message, so summaries over
-  16 KB drop their hourly series (totals stay). Each message still costs
-  several thousand provider tokens; on Groq's free tier the tokens-per-minute
-  limit is usually reached before the request limit.
+  10 KB drop their hourly series (totals stay). The browser also resends only
+  the last 4 turns, each clipped to 1200 characters. Each message still costs
+  a few thousand provider tokens; on Groq's free tier the tokens-per-minute
+  limit is usually reached before the request limit. Setting
+  `ANALYST_REASONING_EFFORT=low` (reasoning models only) reduces output tokens.
 - **Shared quota.** Chat and report share `ANALYST_REQUESTS_PER_MINUTE` and the
   one-request-at-a-time rule, because they spend the same provider quota. The
   default of 3 is low for a conversation; raise it if your provider allows.

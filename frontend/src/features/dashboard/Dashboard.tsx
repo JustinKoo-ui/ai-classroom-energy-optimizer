@@ -24,7 +24,6 @@ const navigationItems = [
   { id: "analytics", label: "Analytics" },
   { id: "ai-insights", label: "AI insights" },
   { id: "environmental-analyst", label: "Environmental analyst" },
-  { id: "ai-chat", label: "AI chat" },
 ] as const;
 
 type SectionId = (typeof navigationItems)[number]["id"];
@@ -275,16 +274,15 @@ export function Dashboard() {
           <EnvironmentalAnalyst classroomId={data.classroom_id} />
         </div>
 
-        {/* Also kept mounted so the conversation survives switching pages. */}
-        <div hidden={activeSection !== "ai-chat"}>
-          <AIChat classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
-        </div>
-
         <footer className="dashboard-footer">
           <span>Nexergy · Classroom Energy Intelligence</span>
           <span>AI recommends. Deterministic policy decides. Devices acknowledge.</span>
         </footer>
       </main>
+
+      {/* Floating assistant, available on every page. Rendered outside the page
+          switch so the conversation survives navigation. */}
+      <AIChat classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
     </div>
   );
 }

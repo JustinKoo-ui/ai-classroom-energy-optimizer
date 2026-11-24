@@ -343,3 +343,16 @@ async def test_validation_failures_log_field_names_not_generated_text(caplog):
     assert "failed validation" in caplog.text
     assert "answer" in caplog.text
     assert "private words" not in caplog.text
+
+
+async def test_reasoning_effort_is_sent_only_when_configured():
+    plain, low = [], []
+    await ask(EnergyChat(settings(), transport=provider(plain)))
+    await ask(EnergyChat(settings(analyst_reasoning_effort="low"), transport=provider(low)))
+    assert "reasoning_effort" not in json.loads(plain[0].content)
+    assert json.loads(low[0].content)["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_rejects_unknown_values():
+    with pytest.raises(ValueError):
+        settings(analyst_reasoning_effort="extreme")
