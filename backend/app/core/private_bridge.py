@@ -52,6 +52,8 @@ def require_private_bridge(request: Request) -> str | None:
         ("GET", f"{base}/camera/stream"),
         ("GET", f"{base}/analytics"),
         ("POST", f"{base}/analytics/report"),
+        # Read-only AI chat; like the report it also needs ANALYST_ACCESS_TOKEN.
+        ("POST", f"{base}/analytics/chat"),
     }
     if (request.method, request.url.path) in allowed:
         return None
