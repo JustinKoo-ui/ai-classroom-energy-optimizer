@@ -138,7 +138,8 @@ async def chat_about_analytics(
     """Read-only questions about recorded data. Cannot reach devices or automation."""
     _require_loopback(request)
     settings = getattr(request.app.state, "analytics_settings", None) or Settings()
-    _authenticate_analyst(request, settings)
+    if not settings.analyst_chat_open:
+        _authenticate_analyst(request, settings)
     chat: EnergyChat | None = getattr(request.app.state, "energy_chat", None)
     if chat is None:
         return ChatResponse(status="unavailable", message="The AI assistant is unavailable.")

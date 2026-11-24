@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     analyst_reasoning_effort: Literal["", "low", "medium", "high"] = Field(
         default="", alias="ANALYST_REASONING_EFFORT"
     )
+    # true lets anyone who can open the dashboard use the AI chat without typing
+    # ANALYST_ACCESS_TOKEN. Loopback / authenticated-bridge access is still required,
+    # so on Cloudflare the Access login remains the gate. The AI report keeps its token.
+    analyst_chat_open: bool = Field(default=False, alias="ANALYST_CHAT_OPEN")
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[2] / ".env",

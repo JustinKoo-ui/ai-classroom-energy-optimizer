@@ -21,8 +21,12 @@ const STARTER_QUESTIONS = [
 
 /**
  * Floating AI assistant: a round button at the bottom-right of every page that
- * opens a chat panel. It stays mounted while closed, so the conversation and
- * the typed token survive both closing the panel and switching pages.
+ * opens a chat panel. It stays mounted while closed, so the conversation
+ * survives both closing the panel and switching pages.
+ *
+ * The access token field only appears when the backend asks for one
+ * (ANALYST_CHAT_OPEN is off). With ANALYST_CHAT_OPEN=true anyone who can open the
+ * dashboard can ask questions without it.
  */
 export function AIChat({ classroomId }: { classroomId: UUID }) {
   // The access token stays in React memory only. It is not the provider API key
@@ -32,25 +36,26 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
   const [seenCount, setSeenCount] = useState(0);
-  const { messages, error, loading, send, clear } = useAIChat(classroomId);
+  const { messages, error, loading, waitSeconds, authRequired, send, clear } = useAIChat(classroomId);
   const logRef = useRef<HTMLDivElement>(null);
   const tokenRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bubbleRef = useRef<HTMLButtonElement>(null);
-  const tokenMissing = !accessToken.trim();
+  const showToken = authRequired || accessToken !== "";
+  const tokenMissing = authRequired && !accessToken.trim();
   const lastReply = messages.at(-1)?.reply;
   const unread = !open && messages.length > seenCount;
 
   useEffect(() => {
     const log = logRef.current;
     if (log) log.scrollTop = log.scrollHeight;
-  }, [messages, loading, open]);
+  }, [messages, loading, waitSeconds, error, open]);
 
   useEffect(() => {
     if (!open) return;
-    // Focus the first thing the person needs: the token, then the question box.
-    (tokenRef.current?.value.trim() ? inputRef.current : tokenRef.current)?.focus();
-  }, [open]);
+    // Focus the first thing the person needs: the token if required, else the question box.
+    (tokenRef.current && !tokenRef.current.value.trim() ? tokenRef.current : inputRef.current)?.focus();
+  }, [open, authRequired]);
 
   function setPanel(next: boolean) {
     setOpen(next);
@@ -116,11 +121,13 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
               {Object.entries(PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </label>
-          <label className="ai-chat__token">Access token
-            <input ref={tokenRef} type="password" autoComplete="off" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} aria-describedby="ai-chat-token-help" />
-          </label>
-          <button type="button" onClick={clear} disabled={messages.length === 0 && !error}>Clear</button>
-          <small id="ai-chat-token-help">The report access token set on your backend (not the AI provider key). Kept in memory only.</small>
+          {showToken && (
+            <label className="ai-chat__token">Access token
+              <input ref={tokenRef} type="password" autoComplete="off" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} aria-describedby="ai-chat-token-help" />
+            </label>
+          )}
+          <button type="button" onClick={clear} disabled={messages.length === 0 && !error}>Clear chat</button>
+          {showToken && <small id="ai-chat-token-help">ANALYST_ACCESS_TOKEN from the backend, not the AI provider key. Kept in memory only.</small>}
         </div>
 
         <div className="ai-chat__log" ref={logRef} role="log" aria-live="polite" aria-label="Conversation with the AI energy assistant">
@@ -133,7 +140,7 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
                   <button key={question} type="button" disabled={tokenMissing} onClick={() => void ask(question)}>{question}</button>
                 ))}
               </div>
-              {tokenMissing && <small>Enter the access token above to start.</small>}
+
             </div>
           )}
           {messages.map((message) => (
@@ -149,18 +156,22 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
               )}
             </article>
           ))}
-          {loading && <p className="ai-chat__thinking" role="status">Assistant is reading your room data…</p>}
+          {loading && (
+            <p className="ai-chat__thinking" role="status">
+              {waitSeconds !== null
+                ? `The AI's free per-minute limit is busy. Answering automatically in ${waitSeconds} s…`
+                : "Assistant is reading your room data…"}
+            </p>
+          )}
+          {error && <div className="inline-alert ai-chat__error" role="alert">{error}</div>}
+          {lastReply && lastReply.suggested_questions.length > 0 && !loading && (
+            <div className="ai-chat__chips ai-chat__chips--follow-up" aria-label="Suggested follow-up questions">
+              {lastReply.suggested_questions.map((question) => (
+                <button key={question} type="button" disabled={tokenMissing} onClick={() => void ask(question)}>{question}</button>
+              ))}
+            </div>
+          )}
         </div>
-
-        {error && <div className="inline-alert ai-chat__error" role="alert">{error}</div>}
-
-        {lastReply && lastReply.suggested_questions.length > 0 && !loading && (
-          <div className="ai-chat__chips ai-chat__chips--follow-up" aria-label="Suggested follow-up questions">
-            {lastReply.suggested_questions.map((question) => (
-              <button key={question} type="button" disabled={tokenMissing} onClick={() => void ask(question)}>{question}</button>
-            ))}
-          </div>
-        )}
 
         <form className="ai-chat__composer" onSubmit={onSubmit}>
           <label htmlFor="ai-chat-input" className="ai-chat__visually-hidden">Your question</label>

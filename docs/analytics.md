@@ -270,6 +270,15 @@ None of these routes can create commands or change automation.
 - **Shared quota.** Chat and report share `ANALYST_REQUESTS_PER_MINUTE` and the
   one-request-at-a-time rule, because they spend the same provider quota. The
   default of 3 is low for a conversation; raise it if your provider allows.
+- **Optional open access.** With `ANALYST_CHAT_OPEN=true` the chat skips the
+  report token, so anyone who can open the dashboard can ask questions. It still
+  requires loopback or the authenticated Cloudflare bridge (Access login), and
+  the AI report keeps its token. Everyone then shares one provider quota: if the
+  Access policy lets the public in, anyone can use it up.
+- **Busy provider.** When the provider's per-minute limit is hit and the wait is
+  45 seconds or less, the browser waits with a countdown and retries once.
+- **Plain text.** Markdown the model adds anyway (separator lines, headings,
+  bold markers, tables) is removed on the server before the answer is returned.
 - **Browser-supplied history is untrusted.** It is length-limited context and
   cannot change the system rules or the data block. Nothing is stored on the
   server or in browser storage; clearing or reloading the page ends the chat.
