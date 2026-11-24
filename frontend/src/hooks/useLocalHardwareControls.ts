@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   HardwareControlService,
   getHardwareControlMode,
@@ -24,6 +24,8 @@ export function useLocalHardwareControls(classroomId: UUID | undefined) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingDeviceIds, setPendingDeviceIds] = useState<ReadonlySet<UUID>>(new Set());
+  const [urgencyPending, setUrgencyPending] = useState(false);
+  const urgencyPendingRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!service) return;
@@ -101,7 +103,10 @@ export function useLocalHardwareControls(classroomId: UUID | undefined) {
   );
 
   const activateUrgency = useCallback(async () => {
-    if (!service || mode !== "local") throw new Error("Urgency activation is available from localhost only.");
+    if (!service) throw new Error("Hardware controls are not enabled.");
+    if (urgencyPendingRef.current || urgency?.status === "monitoring") return;
+    urgencyPendingRef.current = true;
+    setUrgencyPending(true);
     setError(null);
     try {
       const status = await service.activateUrgency();
@@ -110,13 +115,17 @@ export function useLocalHardwareControls(classroomId: UUID | undefined) {
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Urgency request failed.";
       setError(message);
+    } finally {
+      urgencyPendingRef.current = false;
+      setUrgencyPending(false);
     }
-  }, [mode, refresh, service]);
+  }, [refresh, service, urgency?.status]);
 
   return {
     enabled,
     mode,
-    canActivateUrgency: mode === "local",
+    canActivateUrgency: enabled,
+    urgencyPending,
     pendingDeviceIds,
     deviceStates,
     loaded,

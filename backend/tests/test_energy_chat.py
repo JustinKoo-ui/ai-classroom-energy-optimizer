@@ -1,5 +1,6 @@
 """Read-only AI chat over server-calculated analytics, with a simulated provider."""
 
+import asyncio
 import hashlib
 import json
 from datetime import date, timedelta
@@ -393,3 +394,23 @@ async def test_low_reasoning_reserves_a_smaller_output_budget():
     await ask(EnergyChat(settings(analyst_reasoning_effort="low"), transport=provider(low)))
     assert json.loads(default[0].content)["max_completion_tokens"] == 3000
     assert json.loads(low[0].content)["max_completion_tokens"] == 1500
+
+
+async def test_schema_generation_failure_is_retried_for_chat_too():
+    """Groq's json_validate_failed 400 gets the analyst's single retry in chat as well."""
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(400, json={"error": {"code": "json_validate_failed"}})
+        return httpx.Response(200, json=completion(request))
+
+    service = EnergyChat(
+        settings(analyst_max_retries=1),
+        transport=httpx.MockTransport(handler),
+        sleeper=lambda _delay: asyncio.sleep(0),
+    )
+    result = await ask(service)
+    assert result.status == "ready"
+    assert len(seen) == 2

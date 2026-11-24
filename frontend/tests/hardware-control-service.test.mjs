@@ -86,12 +86,65 @@ test("remote service fetches state/status through same-origin authenticated requ
     assert.ok(init.signal instanceof AbortSignal);
   }
 });
-test("remote urgency activation is blocked before any request", async () => {
+test("remote urgency activation uses the authenticated same-origin JSON route", async () => {
   configure();
   let calls = 0;
-  globalThis.fetch = async () => { calls++; return json({}); };
-  await assert.rejects(new HardwareControlService(CLASSROOM).activateUrgency(), /localhost only/);
-  assert.equal(calls, 0);
+  const status = { status: "monitoring", expires_at: "2026-10-27T05:00:00Z" };
+  globalThis.fetch = async (url, init) => {
+    calls++;
+    assert.equal(url, `/api/v1/classrooms/${CLASSROOM}/urgency`);
+    assert.equal(init.method, "POST");
+    assert.equal(init.credentials, "include");
+    assert.equal(init.cache, "no-store");
+    assert.equal(init.headers["Content-Type"], "application/json");
+    assert.match(init.headers["Idempotency-Key"], /^[0-9a-f-]{36}$/);
+    assert.deepEqual(JSON.parse(init.body), {});
+    assert.ok(init.signal instanceof AbortSignal);
+    assert.equal(init.signal.aborted, false);
+    return json(status);
+  };
+  assert.deepEqual(await new HardwareControlService(CLASSROOM).activateUrgency(), status);
+  assert.equal(calls, 1);
+});
+
+test("concurrent urgency activation requests share one pending attempt", async () => {
+  configure();
+  let calls = 0;
+  let complete;
+  globalThis.fetch = () => {
+    calls++;
+    return new Promise((resolve) => { complete = resolve; });
+  };
+  const service = new HardwareControlService(CLASSROOM);
+  const first = service.activateUrgency();
+  const second = service.activateUrgency();
+  assert.equal(calls, 1);
+  const status = { status: "monitoring", expires_at: "2026-10-27T05:00:00Z" };
+  complete(json(status));
+  assert.deepEqual(await first, status);
+  assert.deepEqual(await second, status);
+});
+
+test("urgency retries reuse the attempt key when the response was lost", async () => {
+  configure();
+  const keys = [];
+  globalThis.fetch = async (_url, init) => {
+    keys.push(init.headers["Idempotency-Key"]);
+    if (keys.length === 1) throw new Error("Response lost");
+    return json({ status: "monitoring" });
+  };
+  const service = new HardwareControlService(CLASSROOM);
+  await assert.rejects(service.activateUrgency(), /Response lost/);
+  assert.equal((await service.activateUrgency()).status, "monitoring");
+  assert.equal(keys[0], keys[1]);
+  await service.activateUrgency();
+  assert.notEqual(keys[1], keys[2]);
+});
+
+test("remote urgency authorization failures reject without a successful state", async () => {
+  configure();
+  globalThis.fetch = async () => json({}, 403);
+  await assert.rejects(new HardwareControlService(CLASSROOM).activateUrgency(), /not authorized/);
 });
 test("local urgency activation remains available", async () => {
   configure("http://localhost:3000");
@@ -100,6 +153,8 @@ test("local urgency activation remains available", async () => {
   globalThis.fetch = async (url, init) => {
     assert.equal(url, `http://localhost:8000/api/v1/classrooms/${CLASSROOM}/urgency`);
     assert.equal(init.method, "POST");
+    assert.match(init.headers["Idempotency-Key"], /^[0-9a-f-]{36}$/);
+    assert.deepEqual(JSON.parse(init.body), {});
     return json({ status: "monitoring" });
   };
   assert.equal((await new HardwareControlService(CLASSROOM).activateUrgency()).status, "monitoring");
@@ -197,6 +252,7 @@ test("a service created in demo mode cannot send hardware requests", async () =>
   const service = new HardwareControlService(CLASSROOM);
   await assert.rejects(service.getDeviceStates(), /not enabled/);
   await assert.rejects(service.requestControl(request()), /not enabled/);
+  await assert.rejects(service.activateUrgency(), /not enabled/);
   assert.equal(calls, 0);
 });
 

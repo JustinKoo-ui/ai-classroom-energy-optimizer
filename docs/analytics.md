@@ -199,6 +199,15 @@ envelope can contain a provider 429 result; `metrics_endpoint_available: true`
 confirms that deterministic analytics remain available. Snapshot/cache checks
 are null when no commentary was generated, rather than indicating corrupt metrics.
 
+A provider HTTP 400 with `error.code: json_validate_failed` means Groq rejected
+its generated report, for example because `data_quality_and_limitations` was
+missing. The prompt explicitly names all seven required sections. This specific
+generation error is retried within `ANALYST_MAX_RETRIES` (default one retry),
+using the same strict schema and bounded request deadline. Rejected
+`failed_generation` content is never accepted as a report. Other HTTP 400s are
+not retried. Exhausted retries leave commentary unavailable while calculated
+metrics remain available.
+
 Reports compact adjacent identical hourly/daily buckets into runs with explicit
 bucket counts and per-bucket metrics; numerical totals are unchanged. The adapter
 does not immediately retry provider 429s. It preserves the numeric/HTTP-date

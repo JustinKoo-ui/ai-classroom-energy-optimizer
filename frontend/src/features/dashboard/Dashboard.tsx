@@ -147,10 +147,10 @@ export function Dashboard() {
                 {hardware.canActivateUrgency && <button
                   className="urgency-control__button"
                   type="button"
-                  disabled={urgencyActive}
+                  disabled={urgencyActive || hardware.urgencyPending}
                   onClick={() => void hardware.activateUrgency()}
                 >
-                  {urgencyActive ? "Urgency monitoring" : "Activate urgency"}
+                  {hardware.urgencyPending ? "Requesting urgency…" : urgencyActive ? "Urgency monitoring" : "Activate urgency"}
                 </button>}
                 <span role="status" aria-live="polite">
                   {urgencyActive && urgencySecondsRemaining !== null

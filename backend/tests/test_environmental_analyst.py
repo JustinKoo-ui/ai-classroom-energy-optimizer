@@ -6,7 +6,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from email.utils import format_datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import httpx
@@ -138,6 +138,8 @@ async def test_valid_report_uses_deterministic_summary_and_keeps_credentials_ser
     assert payload["max_completion_tokens"] <= 6000
     assert "tools" not in payload
     assert payload["response_format"]["json_schema"]["strict"] is True
+    prompt = payload["messages"][0]["content"]
+    assert all(name in prompt for name in SECTIONS)
     summary = json.loads(payload["messages"][1]["content"])["summary"]
     assert summary["total_energy"] == {
         **numerical.total_energy.model_dump(mode="json"),
@@ -211,6 +213,7 @@ async def test_invalid_optional_endpoint_disables_ai_without_network(endpoint):
         "measured_basis",
         "extra_control",
         "numeric_section",
+        "missing_section",
     ],
 )
 async def test_malformed_refused_or_unbound_responses_are_unavailable_and_uncached(case):
@@ -249,6 +252,8 @@ async def test_malformed_refused_or_unbound_responses_are_unavailable_and_uncach
                 content["command"] = {"on": True}
             elif case == "numeric_section":
                 content["sections"]["executive_summary"] = 123
+            elif case == "missing_section":
+                del content["sections"]["data_quality_and_limitations"]
             message["content"] = json.dumps(content)
         return httpx.Response(200, json=response)
 
@@ -334,6 +339,89 @@ async def test_transient_server_error_retries_but_does_not_cache_failure():
     assert calls == 2
     assert (await service.generate(report(), CONTEXT)).cached
     assert calls == 2
+
+
+async def test_schema_generation_error_retries_then_validates_and_caches_complete_report():
+    calls = 0
+    sleeper = AsyncMock()
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            failed = completion(request)
+            content = json.loads(failed["choices"][0]["message"]["content"])
+            del content["sections"]["data_quality_and_limitations"]
+            return httpx.Response(
+                400,
+                json={"error": {
+                    "code": "json_validate_failed",
+                    "message": f"Sensitive provider detail {API_SECRET}",
+                    "failed_generation": json.dumps(content),
+                }},
+            )
+        return httpx.Response(200, json=completion(request))
+
+    service = EnvironmentalAnalyst(
+        settings(analyst_max_retries=1), transport=httpx.MockTransport(handler), sleeper=sleeper
+    )
+    result = await service.generate(report(), CONTEXT)
+    assert result.status == "ready"
+    assert set(result.sections.model_dump()) == set(SECTIONS)
+    assert API_SECRET not in result.model_dump_json()
+    assert calls == 2
+    sleeper.assert_awaited_once_with(0.5)
+    assert (await service.generate(report(), CONTEXT)).cached
+    assert calls == 2
+
+
+async def test_schema_generation_errors_exhaust_retry_budget_without_accepting_failed_output():
+    calls = 0
+    sleeper = AsyncMock()
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        # Even a complete failed_generation must not be used as a successful report.
+        content = completion(request)["choices"][0]["message"]["content"]
+        return httpx.Response(
+            400, json={"error": {"code": "json_validate_failed", "failed_generation": content}}
+        )
+
+    service = EnvironmentalAnalyst(
+        settings(analyst_max_retries=1), transport=httpx.MockTransport(handler), sleeper=sleeper
+    )
+    for expected_calls in (2, 4):
+        result = await service.generate(report(), CONTEXT)
+        assert result.status == "unavailable"
+        assert result.sections is None
+        assert not result.cached
+        assert calls == expected_calls
+    assert sleeper.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "status,body",
+    [
+        (400, b'not JSON'),
+        (400, b'[]'),
+        (400, b'{"error":null}'),
+        (400, b'{"error":{"code":"invalid_request_error"}}'),
+        (401, b'{"error":{"code":"json_validate_failed"}}'),
+        (400, b'x' * 100001),
+    ],
+    ids=["non-json", "array", "null-error", "invalid-request", "unauthorized", "oversized"],
+)
+async def test_other_provider_errors_do_not_retry(status, body):
+    handler = Mock(return_value=httpx.Response(status, content=body))
+    sleeper = AsyncMock()
+    result = await EnvironmentalAnalyst(
+        settings(analyst_max_retries=1), transport=httpx.MockTransport(handler), sleeper=sleeper
+    ).generate(report(), CONTEXT)
+    assert result.status == "unavailable"
+    assert result.sections is None
+    assert handler.call_count == 1
+    sleeper.assert_not_awaited()
 
 
 async def test_provider_rate_limit_preserves_cooldown_without_immediate_retry():
