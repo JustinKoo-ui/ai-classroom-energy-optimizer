@@ -110,14 +110,16 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     const reportPath = `${base}/analytics/report`;
     const commandMatch = url.pathname.match(new RegExp(`^/api/v1/devices/(${UUID_PATTERN})/commands$`));
     const isCommand = commandMatch !== null && RELAY_IDS.has(commandMatch[1]);
-    const isControl = url.pathname === `${base}/devices` || url.pathname === `${base}/urgency`
+    const isUrgency = url.pathname === `${base}/urgency`;
+    const isUrgencyActivation = isUrgency && request.method === "POST";
+    const isControl = url.pathname === `${base}/devices` || isUrgency
       || isCommand || new RegExp(`^/api/v1/commands/${UUID_PATTERN}$`).test(url.pathname);
     const controlEnabled = env.CLASSROOM_REMOTE_CONTROL_ENABLED === "true";
     if (!new RegExp(`^${UUID_PATTERN}$`).test(classroom)
       || (!readPaths.has(url.pathname) && url.pathname !== reportPath && !(isControl && controlEnabled))) {
       return error(404, "This API route is not available through the monitoring website.");
     }
-    const expectedMethod = url.pathname === reportPath || isCommand ? "POST" : "GET";
+    const expectedMethod = url.pathname === reportPath || isCommand || isUrgencyActivation ? "POST" : "GET";
     if (request.method !== expectedMethod) return error(405, "This API method is not allowed.");
     if (isControl && url.search) return error(400, "Control routes do not accept query parameters.");
     if (isCamera && url.search) return error(400, "Camera preview does not accept query parameters.");
@@ -175,7 +177,7 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     }
 
     let body: Uint8Array | undefined;
-    const requestLabel = isCommand ? "Control" : "AI report";
+    const requestLabel = isCommand || isUrgencyActivation ? "Control" : "AI report";
     if (request.method === "POST") {
       if (request.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "application/json") {
         return error(415, `${requestLabel} requests must use application/json.`);
@@ -202,6 +204,17 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
           return error(400, "The relay command must contain valid JSON.");
         }
       }
+      if (isUrgencyActivation) {
+        try {
+          const activation = JSON.parse(new TextDecoder().decode(bytes));
+          if (activation === null || typeof activation !== "object" || Array.isArray(activation)
+            || Object.keys(activation).length !== 0) {
+            return error(400, "Urgency activation requires an empty JSON object.");
+          }
+        } catch {
+          return error(400, "Urgency activation must contain valid JSON.");
+        }
+      }
     }
     // Construct fresh headers: never trust browser-supplied bridge/forwarding
     // headers, cookies, identity assertions, or an upstream address from input.
@@ -212,10 +225,10 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     if (operatorEmail) headers.set("X-Classroom-Operator-Email", operatorEmail);
     if (body) {
       headers.set("Content-Type", "application/json");
-      if (isCommand) {
+      if (isCommand || isUrgencyActivation) {
         const idempotency = request.headers.get("Idempotency-Key");
         if (!idempotency || idempotency.length > 200 || !/^[\x21-\x7e]+$/.test(idempotency)) {
-          return error(400, "A valid Idempotency-Key is required for relay commands.");
+          return error(400, "A valid Idempotency-Key is required for control requests.");
         }
         headers.set("Idempotency-Key", idempotency);
       } else {

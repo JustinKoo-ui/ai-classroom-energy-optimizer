@@ -10,6 +10,7 @@ const CLASSROOM = "26e97d46-7a34-4439-922a-83684bda557d";
 const BASE = `/api/v1/classrooms/${CLASSROOM}`;
 const CAMERA_PATH = `${BASE}/camera/frame`;
 const STREAM_PATH = `${BASE}/camera/stream`;
+const URGENCY_PATH = `${BASE}/urgency`;
 const BRIDGE_SECRET = "unit-test-private-bridge-secret-with-more-than-32-characters";
 const REPORT_TOKEN = "unit-test-separate-report-token";
 const OPERATOR = "operator@example.com";
@@ -506,6 +507,10 @@ async function controlRequest(path = COMMAND_PATH, options = {}) {
   });
 }
 
+async function urgencyRequest(options = {}) {
+  return controlRequest(URGENCY_PATH, { body: "{}", ...options });
+}
+
 for (const path of [`${BASE}/devices`, `${BASE}/urgency`, "/api/v1/commands/00000000-0000-0000-0000-000000000001"]) {
   test(`authorized operator can read ${path}`, async () => {
     const h = harness({ env: CONTROL_ENV });
@@ -529,6 +534,120 @@ for (const relay of RELAYS) {
       assert.deepEqual(await h.upstreamRequests[0].json(), command);
     });
   }
+}
+
+test("authorized operator can activate urgency with an empty JSON body and idempotency key", async () => {
+  const h = harness({ env: CONTROL_ENV, upstream: () => Response.json({
+    status: "monitoring", started_at: "2026-10-27T04:00:00Z", expires_at: "2026-10-27T04:05:00Z",
+  }, { status: 202 }) });
+  const response = await h.proxy(await urgencyRequest({ headers: {
+    "X-Classroom-Operator-Email": "forged@example.com", "X-Classroom-Proxy-Token": "forged",
+    Cookie: "browser-secret", Authorization: "Bearer browser-secret", "X-Forwarded-For": "127.0.0.1",
+    "Cf-Access-Authenticated-User-Email": "forged@example.com", "X-Upstream-URL": "http://attacker.example",
+  } }), h.env);
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).status, "monitoring");
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const forwarded = h.upstreamRequests[0];
+  assert.equal(forwarded.url, `http://host.docker.internal:8000${URGENCY_PATH}`);
+  assert.equal(forwarded.method, "POST");
+  assert.deepEqual(await forwarded.json(), {});
+  assert.equal(forwarded.headers.get("Idempotency-Key"), "unique-test-key");
+  assert.deepEqual([...forwarded.headers.keys()].sort(), ["accept", "content-type", "idempotency-key",
+    "x-classroom-operator-email", "x-classroom-proxy-token"]);
+  assert.equal(forwarded.headers.get("X-Classroom-Operator-Email"), OPERATOR);
+  assert.equal(forwarded.headers.get("X-Classroom-Proxy-Token"), BRIDGE_SECRET);
+  assert.equal(forwarded.signal.aborted, false);
+  assert.equal(forwarded.redirect, "manual");
+});
+
+for (const enabled of [undefined, "false"]) {
+  test(`urgency activation stays disabled when remote control is ${enabled}`, async () => {
+    const h = harness({ env: { ...CONTROL_ENV, CLASSROOM_REMOTE_CONTROL_ENABLED: enabled } });
+    assert.equal((await h.proxy(await urgencyRequest(), h.env)).status, 404);
+    assert.equal(h.upstreamRequests.length, 0);
+  });
+}
+
+for (const [name, token, expected] of [
+  ["missing Access assertion", null, 401],
+  ["non-operator", await assertion({ email: "other@example.com" }), 403],
+  ["missing operator email", await assertion(), 403],
+  ["forged signature", await assertion({ email: OPERATOR }, { key: otherPair.privateKey }), 401],
+]) {
+  test(`urgency activation rejects ${name}`, async () => {
+    const h = harness({ env: CONTROL_ENV });
+    assert.equal((await h.proxy(await urgencyRequest({ token }), h.env)).status, expected);
+    assert.equal(h.upstreamRequests.length, 0);
+  });
+}
+
+test("urgency activation requires a configured operator allowlist", async () => {
+  const h = harness({ env: { CLASSROOM_REMOTE_CONTROL_ENABLED: "true" } });
+  assert.equal((await h.proxy(await urgencyRequest(), h.env)).status, 503);
+  assert.equal(h.upstreamRequests.length, 0);
+});
+
+for (const key of [null, "", "has space", "x".repeat(201)]) {
+  test(`urgency rejects invalid idempotency key ${String(key).slice(0, 20)}`, async () => {
+    const h = harness({ env: CONTROL_ENV });
+    assert.equal((await h.proxy(await urgencyRequest({ headers: { "Idempotency-Key": key } }), h.env)).status, 400);
+    assert.equal(h.upstreamRequests.length, 0);
+  });
+}
+
+for (const body of [undefined, "", "{", "null", "[]", "false", "1", '""',
+  JSON.stringify({ duration_seconds: 10 }), JSON.stringify(POWER)]) {
+  test(`urgency rejects unsupported body ${body}`, async () => {
+    const h = harness({ env: CONTROL_ENV });
+    assert.equal((await h.proxy(await urgencyRequest({ body }), h.env)).status, 400);
+    assert.equal(h.upstreamRequests.length, 0);
+  });
+}
+
+for (const contentType of [null, "text/plain", "text/html"]) {
+  test(`urgency rejects Content-Type ${contentType}`, async () => {
+    const h = harness({ env: CONTROL_ENV });
+    assert.equal((await h.proxy(await urgencyRequest({ headers: { "Content-Type": contentType } }), h.env)).status, 415);
+    assert.equal(h.upstreamRequests.length, 0);
+  });
+}
+
+for (const origin of [null, "https://attacker.example", "null"]) {
+  test(`urgency rejects request Origin ${origin}`, async () => {
+    const h = harness({ env: CONTROL_ENV });
+    assert.equal((await h.proxy(await urgencyRequest({ headers: { Origin: origin } }), h.env)).status, 403);
+    assert.equal(h.upstreamRequests.length, 0);
+  });
+}
+
+test("urgency rejects another website origin even with an authorized signed identity", async () => {
+  const h = harness({ env: CONTROL_ENV });
+  assert.equal((await h.proxy(await urgencyRequest({ origin: "https://attacker.example" }), h.env)).status, 403);
+  assert.equal(h.upstreamRequests.length, 0);
+});
+
+test("urgency bounds actual streamed bytes before forwarding", async () => {
+  const h = harness({ env: CONTROL_ENV });
+  const body = new ReadableStream({ start(controller) {
+    controller.enqueue(new Uint8Array(4097).fill(32));
+    controller.close();
+  } });
+  assert.equal((await h.proxy(await urgencyRequest({ body }), h.env)).status, 413);
+  assert.equal(h.upstreamRequests.length, 0);
+});
+
+for (const [method, path, expected] of [
+  ["DELETE", URGENCY_PATH, 405], ["PUT", URGENCY_PATH, 405],
+  ["POST", `${URGENCY_PATH}?duration=10`, 400],
+  ["POST", `${URGENCY_PATH}/`, 404],
+  ["POST", "/api/v1/classrooms/00000000-0000-0000-0000-000000000001/urgency", 404],
+]) {
+  test(`urgency rejects method or scope ${method} ${path}`, async () => {
+    const h = harness({ env: CONTROL_ENV });
+    assert.equal((await h.proxy(await controlRequest(path, { method, body: "{}" }), h.env)).status, expected);
+    assert.equal(h.upstreamRequests.length, 0);
+  });
 }
 
 for (const email of [undefined, null, 123, "other@example.com", "operator@example.com,other@example.com"]) {
@@ -606,7 +725,6 @@ for (const origin of [null, "https://attacker.example", "null"]) {
 }
 
 for (const [path, status] of [
-  [`${BASE}/urgency`, 405],
   ["/api/v1/devices/00000000-0000-0000-0000-000000000001/commands", 404],
   [COMMAND_PATH + "?override=true", 400],
   ["/api/v1/classrooms/00000000-0000-0000-0000-000000000001/devices", 404],

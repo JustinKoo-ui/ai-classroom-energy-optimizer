@@ -229,6 +229,33 @@ change before using the power switch. The serial monitor should show
 An HTTP 200 from the command-status API only confirms that the status was
 retrieved; an `applied` command status confirms the ESP32 acknowledgement.
 
+## Backend MQTT repeatedly disconnects
+
+If both backend MQTT clients repeatedly disconnect with `Unspecified error`,
+check the broker log from the repository root:
+
+```powershell
+docker compose logs --tail 60 mqtt
+```
+
+`session taken over` for `aceo-backend-ingestion` or
+`aceo-backend-dispatcher` means another client is connecting with the same
+client ID. Stop older backend instances with Ctrl+C in their terminals and
+keep only one local backend running. Different HTTP ports do not prevent this
+MQTT conflict. Keep the configured ingestion and dispatcher client IDs distinct;
+do not give duplicate backend instances new IDs to mask the conflict, since
+they would also run duplicate ingestion, automation and command dispatch.
+
+After keeping one instance, verify recovery:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/health/ready
+```
+
+Both `mqtt` and `dispatcher` should report `connected`. A refused connection
+or authentication error in the broker log requires checking broker availability
+or the corresponding credentials instead.
+
 ## Readings repeatedly become stale
 
 First distinguish a disconnected ESP32 from a slow publication queue. Check

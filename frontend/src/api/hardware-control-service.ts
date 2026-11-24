@@ -95,6 +95,8 @@ export class HardwareControlService {
   private readonly apiBaseUrl: string;
   private readonly classroomId: UUID;
   private readonly mode: HardwareControlMode;
+  private urgencyActivation: Promise<LocalUrgencyStatus> | null = null;
+  private urgencyIdempotencyKey: string | null = null;
 
   constructor(classroomId: UUID) {
     this.classroomId = classroomId;
@@ -130,26 +132,38 @@ export class HardwareControlService {
 
   async activateUrgency(): Promise<LocalUrgencyStatus> {
     this.requireEnabled();
-    if (this.mode !== "local") throw new Error("Urgency activation is available from localhost only.");
+    if (this.urgencyActivation) return this.urgencyActivation;
+    const idempotencyKey = this.urgencyIdempotencyKey ??= crypto.randomUUID();
+    const activation = this.sendUrgencyActivation(idempotencyKey);
+    this.urgencyActivation = activation;
+    try {
+      return await activation;
+    } finally {
+      this.urgencyActivation = null;
+    }
+  }
+
+  private async sendUrgencyActivation(idempotencyKey: string): Promise<LocalUrgencyStatus> {
     const response = await fetch(
       `${this.apiBaseUrl}/api/v1/classrooms/${this.classroomId}/urgency`,
       {
         method: "POST",
         cache: "no-store",
         credentials: "include",
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify({}),
       },
     );
     if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as
-        | { detail?: unknown }
-        | null;
-      throw new Error(
-        typeof body?.detail === "string"
-          ? body.detail
-          : `Urgency request was not accepted (${response.status}).`,
-      );
+      throw new Error(await responseError(response, "Urgency request was not accepted"));
     }
-    return (await response.json()) as LocalUrgencyStatus;
+    const status = (await response.json()) as LocalUrgencyStatus;
+    this.urgencyIdempotencyKey = null;
+    return status;
   }
 
   async requestControl(request: DeviceControlRequest): Promise<void> {
