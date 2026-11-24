@@ -69,7 +69,9 @@ manually. The helper replaces them with the single supplied operator.
 Default backend settings leave both bridge and remote controls disabled.
 AI provider keys and the separate analyst report token stay in the backend;
 report generation and the floating AI assistant
-(`POST .../analytics/chat`) both still require that report bearer token. The
+(`POST .../analytics/chat`) both still require that report bearer token, unless
+the backend sets `ANALYST_CHAT_OPEN=true`, which lets every signed-in viewer use
+the chat without it. The
 Worker and the backend bridge each allow the chat route explicitly; a route
 missing from either list is rejected (404 at the Worker, 403 at the backend).
 

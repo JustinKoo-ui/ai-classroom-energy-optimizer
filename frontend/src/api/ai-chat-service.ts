@@ -1,6 +1,9 @@
 import type { UUID } from "@/src/types/contracts";
 import type { ChatRequest, ChatResponse } from "@/src/types/ai-chat";
 
+/** The backend requires the report access token for the chat (ANALYST_CHAT_OPEN is off). */
+export class ChatAuthError extends Error {}
+
 export async function sendChatMessage(
   classroomId: UUID,
   body: ChatRequest,
@@ -17,7 +20,8 @@ export async function sendChatMessage(
       signal: AbortSignal.any([signal, AbortSignal.timeout(90_000)]),
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken.trim()}`,
+        // Sent only when typed: a backend with ANALYST_CHAT_OPEN=true needs none.
+        ...(accessToken.trim() ? { Authorization: `Bearer ${accessToken.trim()}` } : {}),
       },
       body: JSON.stringify(body),
     },
@@ -25,7 +29,11 @@ export async function sendChatMessage(
   if (!response.ok) {
     const detail = (await response.json().catch(() => null)) as { detail?: unknown } | null;
     if (response.status === 401) {
-      throw new Error("The access token was not accepted. Use the report access token configured on the backend.");
+      throw new ChatAuthError(
+        accessToken.trim()
+          ? "The access token was not accepted. Use ANALYST_ACCESS_TOKEN from the backend."
+          : "This backend requires an access token for the AI assistant. Enter it above.",
+      );
     }
     if (response.status === 413 || response.status === 422) {
       throw new Error("That message could not be sent. Try a shorter question or clear the chat.");

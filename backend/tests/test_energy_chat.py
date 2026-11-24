@@ -356,3 +356,40 @@ async def test_reasoning_effort_is_sent_only_when_configured():
 def test_reasoning_effort_rejects_unknown_values():
     with pytest.raises(ValueError):
         settings(analyst_reasoning_effort="extreme")
+
+
+@pytest.mark.parametrize(
+    ("raw", "clean"),
+    [
+        ("Lights ran 8 h.\n\n---\n\nAC ran 6 h.", "Lights ran 8 h.\n\nAC ran 6 h."),
+        ("A\n***\nB\n___\nC\n= = =\nD", "A\nB\nC\nD"),
+        ("## Summary\nThe **fan** ran `7.5 h`.", "Summary\nThe fan ran 7.5 h."),
+        ("| Device | Hours |\n|---|:---:|\n| AC | 6.2 |", "Device · Hours\nAC · 6.2"),
+        (
+            "- Switch the AC off at lunch\n- Use daylight",
+            "- Switch the AC off at lunch\n- Use daylight",
+        ),
+        ("Saving is 5 - 10%, not 5--10%.", "Saving is 5 - 10%, not 5--10%."),
+    ],
+)
+def test_plain_text_strips_markdown_but_keeps_content(raw, clean):
+    assert chat_module._plain_text(raw) == clean
+
+
+async def test_markdown_in_answers_is_cleaned_before_reaching_the_browser():
+    service = EnergyChat(
+        settings(),
+        transport=provider(
+            [], change=lambda c: c.update(answer="**Lights**: 8 h\n\n---\n\nAC: 6 h")
+        ),
+    )
+    result = await ask(service)
+    assert result.answer == "Lights: 8 h\n\nAC: 6 h"
+
+
+async def test_low_reasoning_reserves_a_smaller_output_budget():
+    default, low = [], []
+    await ask(EnergyChat(settings(), transport=provider(default)))
+    await ask(EnergyChat(settings(analyst_reasoning_effort="low"), transport=provider(low)))
+    assert json.loads(default[0].content)["max_completion_tokens"] == 3000
+    assert json.loads(low[0].content)["max_completion_tokens"] == 1500

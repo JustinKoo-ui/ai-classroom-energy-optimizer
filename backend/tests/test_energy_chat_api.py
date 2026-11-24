@@ -18,7 +18,7 @@ TOKEN = "local-report-access-token"
 PATH = f"/api/v1/classrooms/{LOCAL_CLASSROOM_ID}/analytics/chat"
 
 
-def app(token=TOKEN):
+def app(token=TOKEN, **overrides):
     instance = FastAPI()
     instance.include_router(router)
     instance.state.analytics_settings = Settings(
@@ -26,6 +26,7 @@ def app(token=TOKEN):
         database_url="postgresql+asyncpg://unused",
         analyst_access_token=token,
         analyst_api_key="private-provider-key",
+        **overrides,
     )
     instance.state.sessions = MagicMock()
     instance.state.energy_chat = SimpleNamespace(
@@ -121,3 +122,44 @@ async def test_storage_failure_is_a_scoped_unavailable_answer():
     assert response.status_code == 200
     assert response.json()["status"] == "unavailable"
     assert "private db detail" not in response.text
+
+
+@pytest.mark.parametrize("token", [None, "wrong-token"])
+async def test_open_chat_needs_no_report_token(token):
+    instance = app(analyst_chat_open=True)
+    with patch(
+        "app.api.v1.routers.analytics._report_and_context",
+        new=AsyncMock(return_value=(object(), {})),
+    ):
+        response = await post(instance, {"message": "Hi"}, token=token)
+    assert response.status_code == 200
+    instance.state.energy_chat.answer.assert_awaited_once()
+
+
+async def test_open_chat_works_without_any_server_token_configured():
+    instance = app(token=None, analyst_chat_open=True)
+    with patch(
+        "app.api.v1.routers.analytics._report_and_context",
+        new=AsyncMock(return_value=(object(), {})),
+    ):
+        response = await post(instance, {"message": "Hi"}, token=None)
+    assert response.status_code == 200
+
+
+async def test_open_chat_still_refuses_remote_clients_without_the_bridge():
+    instance = app(analyst_chat_open=True)
+    response = await post(instance, {"message": "Hi"}, token=None, host="203.0.113.2")
+    assert response.status_code == 403
+    instance.state.energy_chat.answer.assert_not_awaited()
+
+
+async def test_open_chat_does_not_open_the_ai_report():
+    instance = app(analyst_chat_open=True)
+    instance.state.environmental_analyst = SimpleNamespace(generate=AsyncMock())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=instance, client=("127.0.0.1", 1234)),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(PATH.replace("/chat", "/report"), json={})
+    assert response.status_code == 401
+    instance.state.environmental_analyst.generate.assert_not_awaited()
