@@ -56,6 +56,7 @@ def app(**overrides):
             return_value=AnalystResponse(status="unavailable", message="No provider")
         )
     )
+    instance.state.energy_chat = SimpleNamespace(answer=AsyncMock())
     return instance
 
 
@@ -115,6 +116,8 @@ async def test_remote_request_without_bridge_auth_remains_denied():
     ("GET", f"{BASE}/environment-analysis"),
     ("POST", f"{BASE}/analytics"),
     ("GET", f"{BASE}/analytics/report"),
+    ("GET", f"{BASE}/analytics/chat"),
+    ("POST", f"{BASE}/analytics/chat/"),
     ("GET", f"{BASE}/telemetry/latest/"),
     ("DELETE", f"{BASE}/analytics"),
     ("GET", "/health/live"),
@@ -129,6 +132,7 @@ async def test_bridge_credential_cannot_reach_unapproved_paths_or_methods(method
     assert response.status_code == 403
     instance.state.sessions.assert_not_called()
     instance.state.environmental_analyst.generate.assert_not_awaited()
+    instance.state.energy_chat.answer.assert_not_awaited()
 
 
 @pytest.mark.parametrize("suffix", ["telemetry/latest", "occupancy/current"])
@@ -189,6 +193,28 @@ async def test_authenticated_remote_report_reaches_existing_reader_with_both_tok
     assert response.status_code == 404
     reader.assert_awaited_once()
     instance.state.environmental_analyst.generate.assert_not_awaited()
+
+
+async def test_chat_through_bridge_keeps_its_independent_bearer_token_requirement():
+    instance = app()
+    response = await send(instance, f"{BASE}/analytics/chat", method="POST",
+                          headers={PROXY_TOKEN_HEADER: TOKEN}, body={"message": "Hi"})
+    assert response.status_code == 401
+    instance.state.sessions.assert_not_called()
+    instance.state.energy_chat.answer.assert_not_awaited()
+
+
+async def test_authenticated_remote_chat_reaches_reader_with_both_tokens(monkeypatch):
+    """The deployed Cloudflare site reaches the chat only through this bridge."""
+    instance = app()
+    reader = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.v1.routers.analytics.get_analytics_report", reader)
+    response = await send(instance, f"{BASE}/analytics/chat", method="POST", headers={
+        PROXY_TOKEN_HEADER: TOKEN, "Authorization": f"Bearer {REPORT_TOKEN}",
+    }, body={"message": "Which appliance ran longest?"})
+    assert response.status_code == 404  # Auth passed; mocked classroom has no report.
+    reader.assert_awaited_once()
+    instance.state.energy_chat.answer.assert_not_awaited()
 
 
 def test_hardware_router_guard_also_rejects_bridge_header_without_boundary_middleware():

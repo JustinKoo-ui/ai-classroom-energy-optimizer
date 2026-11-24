@@ -68,7 +68,10 @@ The email allowlists support comma-separated values when configured
 manually. The helper replaces them with the single supplied operator.
 Default backend settings leave both bridge and remote controls disabled.
 AI provider keys and the separate analyst report token stay in the backend;
-report generation still requires its existing report bearer token.
+report generation and the floating AI assistant
+(`POST .../analytics/chat`) both still require that report bearer token. The
+Worker and the backend bridge each allow the chat route explicitly; a route
+missing from either list is rejected (404 at the Worker, 403 at the backend).
 
 ## Production frontend and deployment
 
