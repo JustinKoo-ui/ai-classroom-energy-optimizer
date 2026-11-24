@@ -46,9 +46,25 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
   const lastReply = messages.at(-1)?.reply;
   const unread = !open && messages.length > seenCount;
 
+  // A new answer opens at its first line so it can be read top to bottom; while
+  // waiting or after an error, show the bottom of the conversation instead.
+  const anchoredAnswer = useRef<number | null>(null);
   useEffect(() => {
     const log = logRef.current;
-    if (log) log.scrollTop = log.scrollHeight;
+    if (!log || !open) return;
+    const last = messages.at(-1);
+    if (error || loading || last?.role !== "assistant") {
+      log.scrollTop = log.scrollHeight;
+      return;
+    }
+    if (anchoredAnswer.current === last.id) return;
+    anchoredAnswer.current = last.id;
+    const answer = log.querySelector<HTMLElement>(`[data-message-id="${last.id}"]`);
+    if (answer) {
+      // Measured against the log itself, so it does not depend on CSS positioning.
+      const offset = answer.getBoundingClientRect().top - log.getBoundingClientRect().top;
+      log.scrollTop = Math.max(0, log.scrollTop + offset - 8);
+    }
   }, [messages, loading, waitSeconds, error, open]);
 
   useEffect(() => {
@@ -144,7 +160,7 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
             </div>
           )}
           {messages.map((message) => (
-            <article key={message.id} className={`ai-chat__message ai-chat__message--${message.role}`}>
+            <article key={message.id} data-message-id={message.id} className={`ai-chat__message ai-chat__message--${message.role}`}>
               <span className="ai-chat__author">{message.role === "user" ? "You" : "Assistant"}</span>
               <p>{message.content}</p>
               {message.reply && (
