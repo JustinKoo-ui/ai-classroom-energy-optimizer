@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { AnalystCommentary } from "@/src/components/AnalystCommentary";
 import { useEnergyAnalytics } from "@/src/hooks/useEnergyAnalytics";
 import { energyPresentation } from "@/src/lib/analytics-presentation";
 import type { UUID } from "@/src/types/contracts";
@@ -25,9 +24,9 @@ export function EnvironmentalAnalyst({ classroomId }: { classroomId: UUID }) {
   const dateValue = date || (report ? calendarDate(report.as_of, report.timezone) : "");
 
   return (
-    <section id="environmental-analyst" className="analytics-section environmental-analyst" aria-labelledby="analyst-title">
+    <section id="appliances" className="analytics-section environmental-analyst" aria-labelledby="analyst-title">
       <div className="section-heading">
-        <div><p className="eyebrow">Recorded runtime · assumed power</p><h2 id="analyst-title">AI Environmental Analyst</h2></div>
+        <div><p className="eyebrow">Recorded runtime · assumed power</p><h2 id="analyst-title">Appliances tracking</h2></div>
         <span className="analyst-status">{report ? report.total_energy.is_complete ? "Complete runtime coverage" : Date.parse(report.as_of) < Date.parse(report.period_end) ? "Period in progress" : "Incomplete runtime coverage" : "Live history"}</span>
       </div>
       <div className="analyst-toolbar">
@@ -42,7 +41,6 @@ export function EnvironmentalAnalyst({ classroomId }: { classroomId: UUID }) {
       {analytics.loading && <p role="status">Loading recorded runtime and mathematical estimates…</p>}
       {analytics.error && <div className="inline-alert" role="alert">{analytics.error} {report ? "Showing the last successful calculation; check its calculation timestamp." : "Recorded analytics will appear when the local backend is available."}</div>}
       {report && <DeterministicReport report={report} />}
-      <AnalystCommentary classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? classroomId} period={period} date={date || null} currentReportingDate={dateValue} timezone={report?.timezone ?? null} metricsAvailable={Boolean(report) && !analytics.loading} />
     </section>
   );
 }

@@ -197,6 +197,7 @@ for (const [method, path] of [
   ["GET", `${BASE}/occupancy/current`],
   ["GET", `${BASE}/analytics?period=day&date=2026-10-26`],
   ["POST", `${BASE}/analytics/report`],
+  ["POST", `${BASE}/analytics/chat`],
 ]) {
   test(`${method} ${path} reaches only the configured private service after valid Access auth`, async () => {
     const h = harness();
@@ -221,7 +222,9 @@ for (const path of [
   `${BASE}/devices`, `${BASE}/urgency`, `${BASE}/environment-analysis`,
   `/api/v1/devices/00000000-0000-4000-8000-000000000001/commands`,
   `/api/v1/commands/00000000-0000-4000-8000-000000000001`,
-  `${BASE}/analytics/`, `${BASE}/analytics/report/`, "/health/live", "/openapi.json",
+  `${BASE}/analytics/`, `${BASE}/analytics/report/`, `${BASE}/analytics/chat/`,
+  "/api/v1/classrooms/00000000-0000-4000-8000-000000000001/analytics/chat",
+  "/health/live", "/openapi.json",
 ]) {
   test(`unapproved path ${path} is rejected without contacting private services`, async () => {
     const h = harness();
@@ -236,6 +239,7 @@ for (const [method, path] of [
   ["POST", `${BASE}/analytics`], ["DELETE", `${BASE}/analytics`],
   ["HEAD", `${BASE}/analytics`], ["OPTIONS", `${BASE}/analytics`],
   ["GET", `${BASE}/analytics/report`], ["PUT", `${BASE}/analytics/report`],
+  ["GET", `${BASE}/analytics/chat`], ["PUT", `${BASE}/analytics/chat`],
 ]) {
   test(`unapproved method ${method} cannot reach ${path}`, async () => {
     const h = harness();
@@ -735,3 +739,49 @@ for (const [path, status] of [
     assert.equal(h.upstreamRequests.length, 0);
   });
 }
+
+test("AI chat forwards only its bearer token and JSON body", async () => {
+  const h = harness();
+  const body = JSON.stringify({ message: "Which appliance ran longest?", history: [], period: "day" });
+  const response = await h.proxy(await browserRequest(`${BASE}/analytics/chat`, {
+    method: "POST", body,
+    headers: { Authorization: `Bearer ${REPORT_TOKEN}`, Cookie: "session=private-browser-cookie" },
+  }), h.env);
+  assert.equal(response.status, 200);
+  const forwarded = h.upstreamRequests[0];
+  assert.equal(await forwarded.text(), body);
+  assert.equal(forwarded.headers.get("Authorization"), `Bearer ${REPORT_TOKEN}`);
+  assert.equal(forwarded.headers.get("Cookie"), null);
+  assert.equal(forwarded.headers.get("X-Classroom-Operator-Email"), null);
+});
+
+test("AI chat rejects a foreign Origin before private service access", async () => {
+  const h = harness();
+  const response = await h.proxy(await browserRequest(`${BASE}/analytics/chat`, {
+    method: "POST", body: "{}", headers: { Origin: "https://attacker.example" },
+  }), h.env);
+  assert.equal(response.status, 403);
+  assert.equal(h.upstreamRequests.length, 0);
+});
+
+test("AI chat accepts bodies above the report limit up to its own 32 KiB limit", async () => {
+  const h = harness();
+  const accepted = await h.proxy(await browserRequest(`${BASE}/analytics/chat`, {
+    method: "POST", body: " ".repeat(32_766) + "{}",
+  }), h.env);
+  assert.equal(accepted.status, 200);
+  const rejected = await h.proxy(await browserRequest(`${BASE}/analytics/chat`, {
+    method: "POST", body: " ".repeat(32_767) + "{}",
+  }), h.env);
+  assert.equal(rejected.status, 413);
+  assert.equal(h.upstreamRequests.length, 1);
+});
+
+test("the larger chat limit does not apply to the AI report", async () => {
+  const h = harness();
+  const response = await h.proxy(await browserRequest(`${BASE}/analytics/report`, {
+    method: "POST", body: " ".repeat(8000) + "{}",
+  }), h.env);
+  assert.equal(response.status, 413);
+  assert.equal(h.upstreamRequests.length, 0);
+});

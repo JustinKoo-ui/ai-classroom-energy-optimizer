@@ -74,6 +74,7 @@ button { color: inherit; }
   color: #fff;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
   z-index: 10;
 }
 .brand { display: flex; align-items: center; gap: 11px; color: #fff; text-decoration: none; font-weight: var(--weight-bold); letter-spacing: .16em; font-size: var(--text-card); }
@@ -85,8 +86,18 @@ button { color: inherit; }
 .sidebar__foot { margin-top: auto; padding: 16px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.05); display: grid; gap: 4px; }
 .sidebar__foot span, .sidebar__foot small { color: var(--text-on-dark); font-size: var(--text-xs); }
 .sidebar__foot strong { font-size: var(--text-sm); }
+/* Short windows (e.g. laptops with 125-150% Windows display scaling): tighten the
+   menu so all pages and the status box fit; the sidebar scrolls if they still don't. */
+@media (max-height: 700px) and (min-width: 761px) {
+  .sidebar { padding-top: 20px; padding-bottom: 16px; }
+  .sidebar nav { margin-top: 24px; gap: 3px; }
+  .sidebar nav a { padding: 9px 13px; }
+  .sidebar__foot { margin-top: 16px; padding: 12px; }
+}
 
 .dashboard-shell { margin-left: 224px; padding: 30px clamp(22px, 3vw, 48px) 64px; max-width: 1700px; }
+/* Focus moves here programmatically on page change; it is not a control. */
+.dashboard-shell:focus { outline: none; }
 .dashboard-loading { display: grid; gap: 24px; }
 .topbar { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding-bottom: 32px; }
 .topbar h1, .section-heading h2 { margin: 4px 0 0; font-size: var(--text-page); line-height: var(--leading-heading); letter-spacing: var(--tracking-heading); }
@@ -210,7 +221,8 @@ button { color: inherit; }
 .ai-live-trend i { min-height: 0; }
 
 .analytics-section { margin-top: 42px; }
-.camera-section { margin-top: 34px; scroll-margin-top: 24px; }
+.camera-section { scroll-margin-top: 24px; }
+.camera-insights { margin-top: 34px; }
 .camera-card { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(220px, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 22px; background: var(--surface); box-shadow: var(--shadow); }
 .camera-card__viewport { position: relative; display: grid; place-items: center; aspect-ratio: 16 / 9; min-width: 0; overflow: hidden; background: #102824; color: #e4eee8; }
 .camera-card__viewport img { display: block; width: 100%; height: 100%; object-fit: contain; }
@@ -388,6 +400,61 @@ button { color: inherit; }
 .axis-labels, .donut-legend strong, .savings-bars strong, .analyst-table,
 .analyst-facts dd, .analyst-bucket small { font-variant-numeric: tabular-nums lining-nums; }
 
+/* AI energy assistant: floating bubble + panel on every page */
+.dashboard-footer { margin-bottom: 64px; }
+.ai-chat-bubble { position: fixed; right: 24px; bottom: 24px; z-index: 30; display: grid; place-items: center; width: 58px; height: 58px; border: 0; border-radius: 50%; background: var(--green-deep); color: var(--lime); box-shadow: 0 10px 28px rgba(16, 40, 36, .28); cursor: pointer; transition: transform .15s ease, background .15s ease; }
+.ai-chat-bubble:hover { background: var(--green); transform: translateY(-2px); }
+.ai-chat-bubble:focus-visible { outline: 3px solid var(--lime); outline-offset: 3px; }
+.ai-chat-bubble__dot { position: absolute; top: 3px; right: 3px; width: 13px; height: 13px; border: 2px solid var(--green-deep); border-radius: 50%; background: var(--lime); }
+.ai-chat-panel { position: fixed; right: 24px; bottom: 96px; z-index: 30; display: flex; flex-direction: column; gap: 10px; width: min(410px, calc(100vw - 32px)); height: min(660px, calc(100vh - 120px)); overflow-y: auto; padding: 16px; border: 1px solid var(--line); border-radius: 20px; background: var(--canvas); box-shadow: 0 24px 60px rgba(16, 40, 36, .22); }
+.ai-chat-panel[hidden] { display: none; }
+.ai-chat-panel__head { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.ai-chat-panel__head h2 { margin: 2px 0 0; font-size: var(--text-card); }
+.ai-chat-panel__close { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); cursor: pointer; }
+.ai-chat-panel__close:hover { border-color: var(--green); }
+.ai-chat__setup { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.ai-chat__setup label { display: grid; gap: 4px; color: var(--ink-soft); font-size: var(--text-xs); }
+.ai-chat__setup select, .ai-chat__setup input, .ai-chat__setup button { min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: #fff; color: var(--ink); font-size: var(--text-sm); }
+.ai-chat__setup button { cursor: pointer; }
+.ai-chat__setup button:disabled { cursor: not-allowed; opacity: .55; }
+.ai-chat__token { flex: 1 1 150px; }
+.ai-chat__token input { width: 100%; }
+.ai-chat__setup > small { flex-basis: 100%; color: var(--ink-soft); font-size: var(--text-xs); }
+.ai-chat__log { flex: 1 0 auto; min-height: 220px; height: 0; display: grid; align-content: start; gap: 10px; overflow-y: auto; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.ai-chat__empty { display: grid; gap: 9px; justify-items: start; }
+.ai-chat__empty strong { font-size: var(--text-sm); }
+.ai-chat__empty p { margin: 0; color: var(--ink-soft); font-size: var(--text-xs); line-height: var(--leading-label); }
+.ai-chat__empty small { color: var(--ink-soft); }
+.ai-chat__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-chat__chips button { padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--canvas); color: var(--green); font-size: var(--text-xs); font-weight: var(--weight-medium); text-align: left; cursor: pointer; }
+.ai-chat__chips button:hover:not(:disabled) { border-color: var(--green); }
+.ai-chat__chips button:disabled { cursor: not-allowed; opacity: .55; }
+.ai-chat__message { display: grid; gap: 3px; max-width: 88%; padding: 9px 12px; border-radius: 13px; }
+.ai-chat__message p { margin: 0; font-size: var(--text-sm); line-height: var(--leading-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-chat__message--user { justify-self: end; background: var(--green); color: #fff; border-bottom-right-radius: 4px; }
+.ai-chat__message--assistant { justify-self: start; background: var(--mint); color: var(--ink); border-bottom-left-radius: 4px; }
+.ai-chat__author { font-size: 0.6875rem; font-weight: var(--weight-bold); letter-spacing: .05em; text-transform: uppercase; opacity: .8; }
+.ai-chat__meta { color: var(--ink-soft); font-size: 0.6875rem; }
+.ai-chat__thinking { margin: 0; color: var(--ink-soft); font-size: var(--text-sm); }
+.ai-chat__error { margin: 0; }
+.ai-chat__composer { display: grid; gap: 6px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.ai-chat__composer:focus-within { border-color: var(--green); }
+.ai-chat__composer textarea { width: 100%; min-height: 44px; padding: 2px; border: 0; outline: 0; resize: none; background: transparent; color: var(--ink); font-size: var(--text-sm); line-height: var(--leading-body); }
+.ai-chat__composer-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.ai-chat__composer-foot small { color: var(--ink-soft); font-size: 0.6875rem; }
+.ai-chat__composer button { padding: 8px 16px; border: 0; border-radius: 10px; background: var(--green-deep); color: #fff; font-size: var(--text-sm); font-weight: var(--weight-bold); cursor: pointer; }
+.ai-chat__composer button:disabled { cursor: not-allowed; opacity: .5; }
+.ai-chat__note { margin: 0; color: var(--ink-soft); font-size: 0.6875rem; line-height: var(--leading-label); }
+.ai-chat__visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Short windows (laptops with Windows display scaling): give the conversation the
+   space; drop the decorative label and footnote, tighten spacing. */
+@media (max-height: 760px) and (min-width: 761px) {
+  .ai-chat-panel { gap: 8px; padding: 12px; bottom: 90px; height: calc(100vh - 104px); }
+  .ai-chat-panel__head .eyebrow, .ai-chat__note { display: none; }
+  .ai-chat__composer textarea { min-height: 34px; }
+  .ai-chat__log { min-height: 180px; }
+}
+
 @media (max-width: 1400px) {
   .operations-grid { grid-template-columns: 1fr; }
 }
@@ -418,13 +485,23 @@ button { color: inherit; }
 }
 @media (max-width: 760px) {
   .urgency-control span { max-width: 118px; text-align: right; }
-  .sidebar { position: static; width: auto; height: auto; padding: 16px 18px; flex-direction: row; align-items: center; justify-content: space-between; }
-  .sidebar nav { display: none; }
+  .sidebar { position: static; width: auto; height: auto; padding: 16px 18px; flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+  /* Pages are separate, so the menu must stay reachable on phones: show it as a
+     swipeable tab row under the brand instead of hiding it. */
+  .sidebar nav { order: 3; flex: 1 0 100%; display: flex; gap: 6px; margin: 14px -18px 0; padding: 0 18px 2px; overflow-x: auto; scrollbar-width: none; }
+  .sidebar nav::-webkit-scrollbar { display: none; }
+  .sidebar nav a { flex: none; white-space: nowrap; padding: 9px 12px; }
   .sidebar__foot { margin: 0; padding: 8px 11px; }
   .sidebar__foot span, .sidebar__foot small { display: none; }
   .dashboard-shell { margin-left: 0; padding: 22px 16px 48px; }
   .topbar { align-items: flex-start; }
   .analyst-toolbar input, .analyst-toolbar select, .analyst-token-field input { font-size: 1rem; }
+  /* Phones: the panel fills most of the screen above the bubble. 1rem inputs
+     stop iOS from zooming in when they are focused. */
+  .ai-chat-bubble { right: 16px; bottom: 16px; width: 54px; height: 54px; }
+  .ai-chat-panel { right: 8px; left: 8px; bottom: 80px; width: auto; height: calc(100dvh - 96px); padding: 12px; }
+  .ai-chat__composer textarea, .ai-chat__setup input, .ai-chat__setup select { font-size: 1rem; }
+  .ai-chat__message { max-width: 94%; }
   .connection-pill { font-size: 0; padding: 12px; }
   .connection-pill i { margin: 0; }
   .scenario-picker { display: none; }

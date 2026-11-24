@@ -46,8 +46,9 @@ Empty source directories are intentional extension points for later increments.
 
 ## Start here
 
-The additive runtime tracker, estimated-energy dashboard and optional AI
-Environmental Analyst are documented in [docs/analytics.md](docs/analytics.md).
+The additive runtime tracker, estimated-energy dashboard (the **Appliances
+tracking** page) and the optional floating AI assistant are documented in
+[docs/analytics.md](docs/analytics.md).
 Existing databases need migration `004_runtime_history.sql`. Runtime and energy
 analytics work without an AI key; existing demo energy panels remain simulated.
 

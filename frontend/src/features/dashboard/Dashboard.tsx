@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Skeleton from "react-loading-skeleton";
 import "react-loading-skeleton/dist/skeleton.css";
+import { AIChat } from "@/src/components/AIChat";
 import { AIInsightPanel } from "@/src/components/AIInsightPanel";
 import { CameraPreview } from "@/src/components/CameraPreview";
 import { DeviceControlCard } from "@/src/components/DeviceControlCard";
@@ -18,25 +19,35 @@ import type { DashboardMetric } from "@/src/types/dashboard";
 
 const navigationItems = [
   { id: "overview", label: "Overview" },
-  { id: "camera", label: "Camera" },
+  { id: "camera", label: "Camera & AI" },
   { id: "devices", label: "Devices" },
-  { id: "ai-insights", label: "AI insights" },
   { id: "analytics", label: "Analytics" },
-  { id: "environmental-analyst", label: "Environmental analyst" },
+  { id: "appliances", label: "Appliances tracking" },
 ] as const;
+
+type SectionId = (typeof navigationItems)[number]["id"];
+
+// Older links and bookmarks keep working after pages were merged or renamed.
+const LEGACY_SECTIONS: Record<string, SectionId> = {
+  "ai-insights": "camera",
+  "environmental-analyst": "appliances",
+  "ai-chat": "overview",
+};
+
+const DEFAULT_TITLE = "Nexergy · Classroom Energy Intelligence";
 
 function subscribeToHashChange(onChange: () => void) {
   window.addEventListener("hashchange", onChange);
   return () => window.removeEventListener("hashchange", onChange);
 }
 
-function getActiveSection() {
+function getActiveSection(): SectionId {
   const sectionId = window.location.hash.slice(1);
-  return navigationItems.find((item) => item.id === sectionId)?.id ?? "overview";
+  return navigationItems.find((item) => item.id === sectionId)?.id ?? LEGACY_SECTIONS[sectionId] ?? "overview";
 }
 
 export function Dashboard() {
-  const activeSection = useSyncExternalStore(subscribeToHashChange, getActiveSection, () => "overview");
+  const activeSection = useSyncExternalStore<SectionId>(subscribeToHashChange, getActiveSection, () => "overview");
   const { data, loading, error, requestControl, setScenario } = useDashboard();
   const environment = useEnvironmentTelemetry();
   const occupancy = useOccupancy(data?.classroom_id);
@@ -48,6 +59,21 @@ export function Dashboard() {
     urgencyActive && hardware.urgency?.expires_at && clockNow !== null
       ? Math.max(0, Math.ceil((Date.parse(hardware.urgency.expires_at) - clockNow) / 1000))
       : null;
+
+  // Each navigation item is its own page. On every page change, start at the
+  // top (the browser would otherwise keep the previous scroll position or jump
+  // to the section anchor) and move keyboard focus to the new page content.
+  const mainRef = useRef<HTMLElement>(null);
+  const previousSection = useRef<SectionId | null>(null);
+  useEffect(() => {
+    const label = navigationItems.find((item) => item.id === activeSection)?.label;
+    document.title = activeSection === "overview" || !label ? DEFAULT_TITLE : `${label} · Nexergy`;
+    if (previousSection.current !== null && previousSection.current !== activeSection) {
+      window.scrollTo({ top: 0, behavior: "instant" });
+      mainRef.current?.focus({ preventScroll: true });
+    }
+    previousSection.current = activeSection;
+  }, [activeSection]);
 
   useEffect(() => {
     if (!urgencyActive) return;
@@ -109,7 +135,7 @@ export function Dashboard() {
         </div>
       </aside>
 
-      <main className="dashboard-shell" id="top">
+      <main className="dashboard-shell" id="top" ref={mainRef} tabIndex={-1}>
         <header className="topbar">
           <div>
             <p className="eyebrow">{data.building_name}</p>
@@ -159,34 +185,48 @@ export function Dashboard() {
           </div>
         )}
 
-        <section id="overview" aria-labelledby="overview-title">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Room pulse</p>
-              <h2 id="overview-title">Live overview</h2>
+        {activeSection === "overview" && (
+          <section id="overview" aria-labelledby="overview-title">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Room pulse</p>
+                <h2 id="overview-title">Live overview</h2>
+              </div>
+              <p>
+                {environment.telemetry?.observed_at
+                  ? `Sensor sample ${new Date(environment.telemetry.observed_at).toLocaleTimeString()} · other dashboard panels use demo data`
+                  : "Waiting for live sensors · other dashboard panels use demo data"}
+              </p>
             </div>
-            <p>
-              {environment.telemetry?.observed_at
-                ? `Sensor sample ${new Date(environment.telemetry.observed_at).toLocaleTimeString()} · other dashboard panels use demo data`
-                : "Waiting for live sensors · other dashboard panels use demo data"}
-            </p>
-          </div>
-          <div className="metric-grid">
-            {data.metrics.map((metric) => (
-              <MetricCard
-                key={metric.id}
-                metric={withLiveOccupancyReading(
-                  withLiveEnvironmentReading(metric, environment),
-                  occupancy,
-                )}
-              />
-            ))}
-          </div>
-        </section>
+            <div className="metric-grid">
+              {data.metrics.map((metric) => (
+                <MetricCard
+                  key={metric.id}
+                  metric={withLiveOccupancyReading(
+                    withLiveEnvironmentReading(metric, environment),
+                    occupancy,
+                  )}
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
-        <CameraPreview key={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
+        {/* Camera & AI: the on-demand live view plus the occupancy insights
+            derived from it. Leaving the page unmounts the camera, stopping its stream. */}
+        {activeSection === "camera" && (
+          <>
+            <CameraPreview key={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
+            <section id="ai-insights" className="camera-insights" aria-labelledby="ai-title">
+              <div className="section-heading section-heading--compact">
+                <div><p className="eyebrow">Anonymous tracking</p><h2 id="ai-title">AI insights</h2></div>
+              </div>
+              <AIInsightPanel live={occupancy} />
+            </section>
+          </>
+        )}
 
-        <div className="operations-grid">
+        {activeSection === "devices" && (
           <section id="devices" aria-labelledby="device-title">
             <div className="section-heading">
               <div>
@@ -222,29 +262,29 @@ export function Dashboard() {
               {displayedDevices.map((device) => <DeviceControlCard key={device.id} device={device} onRequest={handleDeviceControl} compact />)}
             </div>
           </section>
-          <section id="ai-insights" aria-labelledby="ai-title">
-            <div className="section-heading section-heading--compact">
-              <div><p className="eyebrow">Anonymous tracking</p><h2 id="ai-title">AI insights</h2></div>
+        )}
+
+        {activeSection === "analytics" && (
+          <section id="analytics" className="analytics-section" aria-labelledby="analytics-title">
+            <div className="section-heading">
+              <div><p className="eyebrow">Demo data</p><h2 id="analytics-title">Energy analytics</h2></div>
+              <p>Illustrative only · no calibrated power or energy meter is connected</p>
             </div>
-            <AIInsightPanel live={occupancy} />
+            <EnergyCharts charts={data.charts} />
           </section>
-        </div>
+        )}
 
-        <section id="analytics" className="analytics-section" aria-labelledby="analytics-title">
-          <div className="section-heading">
-            <div><p className="eyebrow">Demo data</p><h2 id="analytics-title">Energy analytics</h2></div>
-            <p>Illustrative only · no calibrated power or energy meter is connected</p>
-          </div>
-          <EnergyCharts charts={data.charts} />
-        </section>
-
-        <EnvironmentalAnalyst classroomId={data.classroom_id} />
+        {activeSection === "appliances" && <EnvironmentalAnalyst classroomId={data.classroom_id} />}
 
         <footer className="dashboard-footer">
           <span>Nexergy · Classroom Energy Intelligence</span>
           <span>AI recommends. Deterministic policy decides. Devices acknowledge.</span>
         </footer>
       </main>
+
+      {/* Floating assistant, available on every page. Rendered outside the page
+          switch so the conversation survives navigation. */}
+      <AIChat classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
     </div>
   );
 }

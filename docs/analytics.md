@@ -246,7 +246,54 @@ minute. All 328 backend tests passed after the compaction/cooldown changes.
   mandatory disclosures and retry delay. Unset server token returns 503;
   missing/wrong client token 401; unknown classroom 404; invalid selection 422.
 
-Neither route can create commands or change automation.
+- `POST /api/v1/classrooms/{id}/analytics/chat` (floating AI assistant) uses the same
+  report token and the same server-calculated report and aggregate context.
+  Body: `{"message":"...","history":[{"role":"user","content":"..."}],
+  "date":null,"period":"day"}`. Limits: message 1-500 characters after
+  trimming; at most 6 history turns of up to 2000 characters, roles `user` or
+  `assistant` only; unknown fields are rejected (422). Response: `status`
+  (`ready`, `unavailable`, `rate_limited`), `message`, `answer`, `on_topic`,
+  `suggested_questions` (at most 3), `generated_at`, `metrics_as_of`, `period`,
+  `data_complete`, `model`, `retry_after_seconds`. Same 401/403/404/422/503
+  rules as the report.
+
+None of these routes can create commands or change automation.
+
+### AI chat behaviour and limits
+
+- **Read-only by construction.** The chat service receives an already-built
+  report and returns text. It has no MQTT, device, automation or database
+  access and sends no tool definitions; replies containing tool calls are
+  rejected. Asking it to switch a device only yields an explanation that
+  controls are on the Devices page.
+- **Grounded in server data.** Every message sends the same summary as the
+  report (with comparison percentages withheld for incomplete periods) and
+  requires the provider to echo its SHA-256 digest. Off-topic questions get a
+  fixed reply. Replies that echo the provider key or report token are dropped.
+- **Context size.** The summary is resent with every message, so summaries over
+  10 KB drop their hourly series (totals stay). The browser also resends only
+  the last 4 turns, each clipped to 1200 characters. Each message still costs
+  a few thousand provider tokens; on Groq's free tier the tokens-per-minute
+  limit is usually reached before the request limit. Setting
+  `ANALYST_REASONING_EFFORT=low` (reasoning models only) reduces output tokens.
+- **Shared quota.** Chat and report share `ANALYST_REQUESTS_PER_MINUTE` and the
+  one-request-at-a-time rule, because they spend the same provider quota. The
+  default of 3 is low for a conversation; raise it if your provider allows.
+- **Optional open access.** With `ANALYST_CHAT_OPEN=true` the chat skips the
+  report token, so anyone who can open the dashboard can ask questions. It still
+  requires loopback or the authenticated Cloudflare bridge (Access login), and
+  the AI report keeps its token. Everyone then shares one provider quota: if the
+  Access policy lets the public in, anyone can use it up.
+- **Busy provider.** When the provider's per-minute limit is hit and the wait is
+  45 seconds or less, the browser waits with a countdown and retries once.
+- **Plain text.** Markdown the model adds anyway (separator lines, headings,
+  bold markers, tables) is removed on the server before the answer is returned.
+- **Browser-supplied history is untrusted.** It is length-limited context and
+  cannot change the system rules or the data block. Nothing is stored on the
+  server or in browser storage; clearing or reloading the page ends the chat.
+- **Proxy.** The Cloudflare Worker allows the chat route with its own 32 KiB
+  body limit (the report keeps 4096 bytes); the browser trims the oldest turns
+  to fit.
 
 ## Validation and limits
 
@@ -285,9 +332,12 @@ Added backend modules:
   `test_energy_analytics.py`, `test_analytics_api.py`, `test_analyst_api.py`,
   `test_analyst_context.py`, `test_environmental_analyst.py`.
 
-Added frontend files are `energy-analytics` and `environmental-analyst` type/API
-modules, `useEnergyAnalytics.ts`, `useAnalystReport.ts`,
-`EnvironmentalAnalyst.tsx`, and `AnalystCommentary.tsx`.
+Added frontend files are the `energy-analytics` type/API modules,
+`useEnergyAnalytics.ts` and `EnvironmentalAnalyst.tsx` (shown as the
+Appliances tracking page). The AI report card (`AnalystCommentary.tsx`,
+`useAnalystReport.ts` and the `environmental-analyst` type/API modules) was
+later removed from the dashboard in favour of the floating AI assistant; the
+`POST .../analytics/report` endpoint remains available.
 Added migration `004_runtime_history.sql` and the two analytics documents.
 
 Modified `backend/app/main.py`, `backend/app/core/config.py`,
