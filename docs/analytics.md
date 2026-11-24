@@ -314,9 +314,12 @@ Added backend modules:
   `test_energy_analytics.py`, `test_analytics_api.py`, `test_analyst_api.py`,
   `test_analyst_context.py`, `test_environmental_analyst.py`.
 
-Added frontend files are `energy-analytics` and `environmental-analyst` type/API
-modules, `useEnergyAnalytics.ts`, `useAnalystReport.ts`,
-`EnvironmentalAnalyst.tsx`, and `AnalystCommentary.tsx`.
+Added frontend files are the `energy-analytics` type/API modules,
+`useEnergyAnalytics.ts` and `EnvironmentalAnalyst.tsx` (shown as the
+Appliances tracking page). The AI report card (`AnalystCommentary.tsx`,
+`useAnalystReport.ts` and the `environmental-analyst` type/API modules) was
+later removed from the dashboard in favour of the floating AI assistant; the
+`POST .../analytics/report` endpoint remains available.
 Added migration `004_runtime_history.sql` and the two analytics documents.
 
 Modified `backend/app/main.py`, `backend/app/core/config.py`,

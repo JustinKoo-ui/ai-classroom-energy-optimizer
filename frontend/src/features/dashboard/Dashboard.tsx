@@ -19,14 +19,20 @@ import type { DashboardMetric } from "@/src/types/dashboard";
 
 const navigationItems = [
   { id: "overview", label: "Overview" },
-  { id: "camera", label: "Camera" },
+  { id: "camera", label: "Camera & AI" },
   { id: "devices", label: "Devices" },
   { id: "analytics", label: "Analytics" },
-  { id: "ai-insights", label: "AI insights" },
-  { id: "environmental-analyst", label: "Environmental analyst" },
+  { id: "appliances", label: "Appliances tracking" },
 ] as const;
 
 type SectionId = (typeof navigationItems)[number]["id"];
+
+// Older links and bookmarks keep working after pages were merged or renamed.
+const LEGACY_SECTIONS: Record<string, SectionId> = {
+  "ai-insights": "camera",
+  "environmental-analyst": "appliances",
+  "ai-chat": "overview",
+};
 
 const DEFAULT_TITLE = "Nexergy · Classroom Energy Intelligence";
 
@@ -37,7 +43,7 @@ function subscribeToHashChange(onChange: () => void) {
 
 function getActiveSection(): SectionId {
   const sectionId = window.location.hash.slice(1);
-  return navigationItems.find((item) => item.id === sectionId)?.id ?? "overview";
+  return navigationItems.find((item) => item.id === sectionId)?.id ?? LEGACY_SECTIONS[sectionId] ?? "overview";
 }
 
 export function Dashboard() {
@@ -206,8 +212,18 @@ export function Dashboard() {
           </section>
         )}
 
+        {/* Camera & AI: the on-demand live view plus the occupancy insights
+            derived from it. Leaving the page unmounts the camera, stopping its stream. */}
         {activeSection === "camera" && (
-          <CameraPreview key={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
+          <>
+            <CameraPreview key={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} classroomId={process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data.classroom_id} />
+            <section id="ai-insights" className="camera-insights" aria-labelledby="ai-title">
+              <div className="section-heading section-heading--compact">
+                <div><p className="eyebrow">Anonymous tracking</p><h2 id="ai-title">AI insights</h2></div>
+              </div>
+              <AIInsightPanel live={occupancy} />
+            </section>
+          </>
         )}
 
         {activeSection === "devices" && (
@@ -248,15 +264,6 @@ export function Dashboard() {
           </section>
         )}
 
-        {activeSection === "ai-insights" && (
-          <section id="ai-insights" aria-labelledby="ai-title">
-            <div className="section-heading section-heading--compact">
-              <div><p className="eyebrow">Anonymous tracking</p><h2 id="ai-title">AI insights</h2></div>
-            </div>
-            <AIInsightPanel live={occupancy} />
-          </section>
-        )}
-
         {activeSection === "analytics" && (
           <section id="analytics" className="analytics-section" aria-labelledby="analytics-title">
             <div className="section-heading">
@@ -267,12 +274,7 @@ export function Dashboard() {
           </section>
         )}
 
-        {/* Kept mounted while hidden so the typed report token and any generated
-            commentary survive switching pages. The camera above is unmounted
-            instead, which stops its stream when you leave that page. */}
-        <div hidden={activeSection !== "environmental-analyst"}>
-          <EnvironmentalAnalyst classroomId={data.classroom_id} />
-        </div>
+        {activeSection === "appliances" && <EnvironmentalAnalyst classroomId={data.classroom_id} />}
 
         <footer className="dashboard-footer">
           <span>Nexergy · Classroom Energy Intelligence</span>

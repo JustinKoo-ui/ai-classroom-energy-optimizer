@@ -182,7 +182,7 @@ export function AIChat({ classroomId }: { classroomId: UUID }) {
           </div>
         </form>
 
-        <p className="ai-chat__note">Energy figures are estimates (recorded ON time × assumed wattage); no meter is connected. AI answers can be wrong.</p>
+        <p className="ai-chat__note">Energy figures are estimates (recorded ON time × assumed wattage); no meter is connected. AI answers can be wrong, so check figures on the Appliances tracking page.</p>
       </div>
 
       <button

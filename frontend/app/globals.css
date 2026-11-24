@@ -222,6 +222,7 @@ button { color: inherit; }
 
 .analytics-section { margin-top: 42px; }
 .camera-section { scroll-margin-top: 24px; }
+.camera-insights { margin-top: 34px; }
 .camera-card { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(220px, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 22px; background: var(--surface); box-shadow: var(--shadow); }
 .camera-card__viewport { position: relative; display: grid; place-items: center; aspect-ratio: 16 / 9; min-width: 0; overflow: hidden; background: #102824; color: #e4eee8; }
 .camera-card__viewport img { display: block; width: 100%; height: 100%; object-fit: contain; }

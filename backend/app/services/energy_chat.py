@@ -149,7 +149,7 @@ class EnergyChat:
                     "The AI assistant is busy or rate limited. Please wait and try again."
                     if limited
                     else "The AI assistant is unavailable right now. Calculated analytics "
-                    "remain available on the Environmental analyst page."
+                    "remain available on the Appliances tracking page."
                 ),
                 period=report.period,
                 data_complete=complete,

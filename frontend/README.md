@@ -85,18 +85,28 @@ UI components consume typed dashboard state and contain no embedded sensor or
 energy values. The demo-state selector exercises demo-panel operation, device
 disconnection and demo feed loss.
 
-## Recorded energy and AI commentary
+## Recorded energy (Appliances tracking) and the AI assistant
 
-The Environmental Analyst displays runtime coverage beside each recorded-energy
+The **Appliances tracking** page (formerly Environmental analyst) displays
+runtime coverage beside each recorded-energy
 estimate. Combined coverage weights devices by their elapsed observation time.
 Provisional and final comparison percentages are withheld until the reporting
 period has ended with complete runtime coverage. Specific messages distinguish
 an unfinished period, late tracking, missing observations and a zero baseline;
 waiting until midnight cannot fill existing gaps.
 
-Detailed calculation diagnostics, disclosures and generated data-quality notes
-are available in collapsed **Methodology and limitations** panels. Numerical
-analytics remain independent of AI commentary and hardware control.
+Detailed calculation diagnostics and disclosures are available in collapsed
+**Methodology and limitations** panels. Numerical analytics remain independent
+of the AI assistant and hardware control.
+
+The page no longer shows the generated AI report card ("Environmental
+interpretation"). Questions about the data go through the floating AI assistant
+on every page instead. The backend report endpoint is unchanged and unused by
+the dashboard.
+
+Pages: Overview, Camera & AI (live camera preview plus the AI insights
+occupancy card), Devices, Analytics, Appliances tracking. Old links to
+`#ai-insights`, `#environmental-analyst` and `#ai-chat` redirect.
 
 Run the coverage/presentation regression tests without adding dependencies:
 
