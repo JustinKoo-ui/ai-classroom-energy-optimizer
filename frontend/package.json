@@ -18,6 +18,7 @@
     "test:hardware": "node --experimental-strip-types --test tests/hardware-control-service.test.mjs",
     "test:camera": "node --experimental-strip-types --test tests/camera-preview-service.test.mjs",
     "test:chat": "node --experimental-strip-types --test tests/chat-history.test.mjs",
+    "test:twin": "node --experimental-strip-types --test tests/solar-twin.test.mjs",
     "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   },
@@ -26,7 +27,8 @@
     "jose": "^6.2.13",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "react-loading-skeleton": "3.5.0"
+    "react-loading-skeleton": "3.5.0",
+    "three": "0.170.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
@@ -37,6 +39,7 @@
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/three": "0.170.0",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.34",
     "eslint": "9.39.4",
