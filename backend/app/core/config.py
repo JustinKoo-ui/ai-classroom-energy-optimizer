@@ -9,7 +9,8 @@ from uuid import UUID
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.domain.local_hardware import LOCAL_CLASSROOM_ID
+from app.domain.local_hardware import LOCAL_CLASSROOM_ID, LOCAL_SITE_ID
+from app.schemas.solar_monitor import ProducerId
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,17 @@ class Settings(BaseSettings):
     mqtt_client_id: str = Field(default="aceo-backend-ingestion", alias="MQTT_CLIENT_ID")
     mqtt_username: str | None = Field(default=None, alias="MQTT_USERNAME")
     mqtt_password: str | None = Field(default=None, alias="MQTT_PASSWORD")
+    solar_site_id: UUID = Field(default=LOCAL_SITE_ID, alias="SOLAR_SITE_ID")
+    solar_classroom_id: UUID = Field(default=LOCAL_CLASSROOM_ID, alias="SOLAR_CLASSROOM_ID")
+    solar_producer_id: ProducerId = Field(
+        default="solar-tracker-esp32", alias="SOLAR_PRODUCER_ID"
+    )
+    solar_stale_after_seconds: int = Field(
+        default=5, alias="SOLAR_STALE_AFTER_SECONDS", ge=2, le=300
+    )
+    relay_monitor_sensor_id: str = Field(
+        default="esp32-room-a204", alias="RELAY_MONITOR_SENSOR_ID", min_length=1, max_length=200
+    )
     mqtt_dispatcher_client_id: str = Field(
         default="aceo-backend-dispatcher",
         alias="MQTT_DISPATCHER_CLIENT_ID",

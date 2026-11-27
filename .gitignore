@@ -24,4 +24,8 @@ Thumbs.db
 .env*
 firmware/esp32/include/secrets.h
 firmware/esp32/.pio/
+firmware/solar_tracker/solar_tracker_esp32_only/solar_mqtt_secrets.h
+firmware/solar_tracker/solar_tracker_esp32_only/spa.c
+firmware/solar_tracker/solar_tracker_esp32_only/spa.h
 infra/mosquitto/password_file
+infra/mosquitto/tls/

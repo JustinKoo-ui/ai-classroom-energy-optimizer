@@ -12,6 +12,7 @@ AC_DELAY = timedelta(seconds=5)
 PIR_SCAN_DURATION = timedelta(seconds=20)
 URGENCY_DURATION = timedelta(minutes=5)
 LDR_THRESHOLD = 1000
+ILLUMINANCE_THRESHOLD_LUX = 300.0
 TEMPERATURE_THRESHOLD_C = 26.0
 HUMIDITY_THRESHOLD_PCT = 65.0
 
@@ -49,6 +50,7 @@ class AutomationInputs:
     pir_motion: bool | None
     pir_fresh: bool
     devices: dict[str, DevicePolicyState]
+    illuminance_lux: float | None = None
 
 
 @dataclass(frozen=True)
@@ -145,7 +147,15 @@ def evaluate_automation(
                 and not isinstance(inputs.ldr_adc, bool)
                 and 0 <= inputs.ldr_adc <= 4095
             )
-            dark = ldr_valid and inputs.ldr_adc is not None and inputs.ldr_adc > LDR_THRESHOLD
+            if ldr_valid and inputs.ldr_adc is not None:
+                dark = inputs.ldr_adc > LDR_THRESHOLD
+            else:
+                dark = (
+                    inputs.environment_fresh
+                    and _valid_reading(inputs.illuminance_lux, 0.0, 200_000.0)
+                    and inputs.illuminance_lux is not None
+                    and inputs.illuminance_lux < ILLUMINANCE_THRESHOLD_LUX
+                )
             light_from_sensors = motion_detected and dark
 
             # Keep legacy persisted fields schema-compatible, but do not retain
@@ -160,7 +170,7 @@ def evaluate_automation(
 
             targets = {name: False for name in DEVICE_NAMES}
             # PIR is the first lighting gate. Neither a scan nor camera
-            # occupancy may bypass fresh motion AND a fresh ADC above 1000.
+            # occupancy may bypass fresh motion and a fresh low-light reading.
             targets["lighting"] = light_from_sensors
             if occupied:
                 # Any person cancels the scan; lighting still follows its gates.

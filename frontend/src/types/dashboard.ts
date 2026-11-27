@@ -14,6 +14,7 @@ export interface DashboardMetric {
     | "ambient_light"
     | "current_power"
     | "energy_today"
+    | "solar_energy"
     | "energy_saved";
   label: string;
   value: number | null;

@@ -1,6 +1,35 @@
 #include <Arduino.h>
+#include "classroom_config.h"
+#include "classroom_sensors.h"
+
+#ifndef SENSOR_TEST_MODE
+#define SENSOR_TEST_MODE 0
+#endif
+
+#if SENSOR_TEST_MODE
+namespace {
+uint32_t lastSampleAt = 0;
+}
+
+void setup() {
+  Serial.begin(115200);
+  classroom_sensors::begin(false);
+  Serial.println("Sensor-only test; Wi-Fi, MQTT and energy persistence are disabled.");
+  Serial.println("PIR needs up to 30 seconds to stabilize.");
+}
+
+void loop() {
+  const uint32_t now = millis();
+  if (now - lastSampleAt >= classroom_config::kSampleIntervalMs) {
+    lastSampleAt = now;
+    classroom_sensors::sample();
+    classroom_sensors::printReadings();
+  }
+  delay(10);
+}
+
+#else
 #include <ArduinoJson.h>
-#include <DHT.h>
 #include <esp_system.h>
 #include <WiFi.h>
 #include <AsyncMqttClient.h>
@@ -9,74 +38,8 @@
 #include <math.h>
 #include <time.h>
 
-#ifndef SENSOR_TEST_MODE
-#define SENSOR_TEST_MODE 0
-#endif
-
-#if SENSOR_TEST_MODE
-namespace {
-constexpr uint8_t kDht22Pin = 4;
-constexpr uint8_t kPirPin = 21;
-constexpr uint8_t kAcs712Pin = 34;
-constexpr uint8_t kLdrPin = 35;
-constexpr uint32_t kSensorTestIntervalMs = 2000;
-constexpr uint32_t kPirWarmupMs = 30000;
-
-DHT dht(kDht22Pin, DHT22);
-uint32_t startedAt = 0;
-uint32_t lastSampleAt = 0;
-uint32_t sampleNumber = 0;
-}
-
-void setup() {
-  Serial.begin(115200);
-  startedAt = millis();
-  dht.begin();
-  pinMode(kPirPin, INPUT);
-  analogReadResolution(12);
-  analogSetPinAttenuation(kAcs712Pin, ADC_11db);
-  analogSetPinAttenuation(kLdrPin, ADC_11db);
-  Serial.println("Sensor-only test; Wi-Fi and MQTT are disabled.");
-  Serial.println("Keep ACS712 OUT disconnected unless its voltage is safe for 3.3 V ADC.");
-  Serial.println("PIR needs up to 30 seconds to stabilize.");
-}
-
-void loop() {
-  if (millis() - lastSampleAt < kSensorTestIntervalMs) {
-    delay(10);
-    return;
-  }
-  lastSampleAt = millis();
-  ++sampleNumber;
-
-  const float temperatureC = dht.readTemperature();
-  const float humidityPct = dht.readHumidity();
-  const uint16_t acsAdc = static_cast<uint16_t>(analogRead(kAcs712Pin));
-  const uint32_t acsMilliVolts = analogReadMilliVolts(kAcs712Pin);
-  const uint16_t ldrAdc = static_cast<uint16_t>(analogRead(kLdrPin));
-
-  Serial.printf("Sample %lu\n", static_cast<unsigned long>(sampleNumber));
-  if (isfinite(temperatureC) && isfinite(humidityPct)) {
-    Serial.printf("DHT22: %.1f C, %.1f %% RH\n", temperatureC, humidityPct);
-  } else {
-    Serial.println("DHT22: READ ERROR (check DATA wiring and pull-up)");
-  }
-
-  if (millis() - startedAt < kPirWarmupMs) {
-    Serial.println("PIR: warming up (signal not evaluated yet)");
-  } else {
-    Serial.printf("PIR: %s\n", digitalRead(kPirPin) == HIGH ? "MOTION" : "no motion");
-  }
-  Serial.printf("LDR AO (GPIO 35): %u / 4095 ADC counts (not lux)\n", ldrAdc);
-  Serial.printf(
-      "ACS712 OUT (GPIO 34): %u ADC counts, %lu mV at ESP32 pin\n",
-      acsAdc,
-      static_cast<unsigned long>(acsMilliVolts));
-  Serial.println();
-}
-
-#else
 #include "secrets.h"
+#include "local_automation.h"
 #include "relay_config.h"
 
 #ifndef FAN_DEVICE_ID
@@ -99,12 +62,15 @@ void loop() {
 #endif
 
 namespace {
-constexpr uint32_t kReadIntervalMs = 2000;
-constexpr uint32_t kPirWarmupMs = 30000;
+using namespace classroom_config;
+
 constexpr uint32_t kReconnectIntervalMs = 5000;
-constexpr uint8_t kLdrSamples = 16;
+constexpr uint32_t kStateVersionBlock = 256;
+constexpr uint32_t kUrgencySeconds = 300;
 constexpr size_t kMaxCommandBytes = 1800;
 constexpr uint8_t kCommandHistorySize = 12;
+constexpr char kFirmwareVersion[] = "1.2.0";
+enum RelayIndex { kFan, kLight, kAirConditioner };
 
 struct RelayDevice {
   const char *id;
@@ -113,6 +79,8 @@ struct RelayDevice {
   bool activeLow;
   bool isOn;
   bool manualMode;
+  uint64_t urgencyUntilMs;
+  bool powerBeforeUrgency;
 };
 
 struct QueuedCommand {
@@ -127,12 +95,11 @@ struct CommandReceipt {
 };
 
 RelayDevice devices[] = {
-    {FAN_DEVICE_ID, "FAN (Red)", 27, relay_config::kFanActiveLow, false, false},
-    {LIGHT_DEVICE_ID, "LIGHT (Yellow)", 12, relay_config::kLightActiveLow, false, false},
-    {AC_DEVICE_ID, "AC (Blue)", 14, relay_config::kAcActiveLow, false, false},
+    {FAN_DEVICE_ID, "FAN", kFanPin, relay_config::kFanActiveLow, false, false, 0, false},
+    {LIGHT_DEVICE_ID, "LIGHT", kLightPin, relay_config::kLightActiveLow, false, false, 0, false},
+    {AC_DEVICE_ID, "AC", kAcPin, relay_config::kAcActiveLow, false, false, 0, false},
 };
 
-DHT dht(DHT22_GPIO, DHT22);
 AsyncMqttClient mqttClient;
 Preferences preferences;
 QueueHandle_t commandQueue = nullptr;
@@ -141,20 +108,16 @@ String gatewayStatusTopic;
 // AsyncMqttClient retains this buffer while it establishes the connection.
 String gatewayWillPayload;
 String commandTopics[3];
-float temperatureC = NAN;
-float humidityPct = NAN;
-uint16_t ldrAdc = 0;
-uint16_t currentAdc = 0;
-bool motionDetected = false;
 uint32_t lastSampleAt = 0;
 uint32_t lastMqttAttemptAt = 0;
-uint32_t bootedAt = 0;
 uint32_t stateVersion = 0;
+uint32_t reservedStateVersion = 0;
 uint32_t receiptWriteIndex = 0;
-volatile bool mqttConnected = false;
-volatile bool mqttConnecting = false;
+bool announcedNetworkTime = false;
+std::atomic<bool> mqttConnected{false};
+std::atomic<bool> mqttConnecting{false};
 std::atomic<uint32_t> pendingMqttPublishes{0};
-std::atomic<bool> mqttTelemetryReady{false};
+std::atomic<bool> mqttAnnouncementPending{false};
 char bootId[37];
 CommandReceipt commandReceipts[kCommandHistorySize] = {};
 
@@ -291,9 +254,15 @@ const char *modeName(const RelayDevice &device) {
   return device.manualMode ? "manual" : "auto";
 }
 
-void persistStateVersion() {
+void advanceStateVersion() {
+  // Reserve a block in NVS so local PIR/threshold transitions do not write flash.
+  if (stateVersion >= reservedStateVersion) {
+    reservedStateVersion = stateVersion + kStateVersionBlock;
+    if (preferences.putUInt("stateVersion", reservedStateVersion) != sizeof(uint32_t)) {
+      Serial.println("Could not reserve relay state versions in NVS.");
+    }
+  }
   ++stateVersion;
-  preferences.putUInt("stateVersion", stateVersion);
 }
 
 void controlOutput(const RelayDevice &device, bool turnOn) {
@@ -303,16 +272,40 @@ void controlOutput(const RelayDevice &device, bool turnOn) {
 void setDeviceMode(RelayDevice &device, bool manualMode) {
   if (device.manualMode != manualMode) {
     device.manualMode = manualMode;
-    persistStateVersion();
+    advanceStateVersion();
   }
 }
 
 void setDeviceOutput(RelayDevice &device, bool turnOn) {
   if (device.isOn != turnOn) {
     device.isOn = turnOn;
-    persistStateVersion();
+    controlOutput(device, turnOn);
+    advanceStateVersion();
   }
-  controlOutput(device, turnOn);
+}
+
+void updateLocalAutomation() {
+  if (!kLocalAutomation) return;
+  const auto &reading = classroom_sensors::latest();
+  const RelayTargets targets = localRelayTargets(classroom_sensors::motionDetected(),
+      reading.bh1750Fresh, reading.lux, reading.temperatureC, reading.humidityPct);
+  const bool outputs[] = {targets.fan, targets.light, targets.airConditioner};
+  const uint64_t now = classroom_sensors::uptimeMs();
+  for (size_t index = 0; index < 3; ++index) {
+    RelayDevice &device = devices[index];
+    if (now < device.urgencyUntilMs) continue;
+    if (device.urgencyUntilMs != 0) {
+      device.urgencyUntilMs = 0;
+      if (device.manualMode) setDeviceOutput(device, device.powerBeforeUrgency);
+    }
+    if (!device.manualMode) setDeviceOutput(device, outputs[index]);
+  }
+}
+
+void addReportedState(JsonObject state, const RelayDevice &device) {
+  state["on"] = device.isOn;
+  state["mode"] = modeName(device);
+  if (kLocalAutomation) state["automation_owner"] = "firmware";
 }
 
 void publishDeviceState(const RelayDevice &device) {
@@ -323,9 +316,7 @@ void publishDeviceState(const RelayDevice &device) {
   addEnvelopeHeader(document, occurredAt);
   JsonObject payload = document["payload"].to<JsonObject>();
   payload["device_id"] = device.id;
-  JsonObject state = payload["state"].to<JsonObject>();
-  state["on"] = device.isOn;
-  state["mode"] = modeName(device);
+  addReportedState(payload["state"].to<JsonObject>(), device);
   payload["fault_codes"].to<JsonArray>();
   payload["state_version"] = stateVersion;
   publishJson(
@@ -341,74 +332,72 @@ void publishAllDeviceStates() {
   }
 }
 
-String availabilityEnvelope(const char *status) {
-  char occurredAt[25];
-  if (!utcTimestamp(occurredAt, sizeof(occurredAt))) return String();
-  JsonDocument document;
+void makeAvailability(JsonDocument &document, const char *status, const char *occurredAt) {
   addEnvelopeHeader(document, occurredAt);
   JsonObject payload = document["payload"].to<JsonObject>();
   payload["status"] = status;
   payload["boot_id"] = bootId;
-  payload["firmware_version"] = "1.1.0";
-  String serialized;
-  serializeJson(document, serialized);
-  return serialized;
+  payload["firmware_version"] = kFirmwareVersion;
 }
 
-void publishGatewayAvailability(const char *status) {
+void publishGatewayAvailability() {
   char occurredAt[25];
-  if (!utcTimestamp(occurredAt, sizeof(occurredAt))) return;
+  announcedNetworkTime = utcTimestamp(occurredAt, sizeof(occurredAt));
   JsonDocument document;
-  addEnvelopeHeader(document, occurredAt);
-  JsonObject payload = document["payload"].to<JsonObject>();
-  payload["status"] = status;
-  payload["boot_id"] = bootId;
-  payload["firmware_version"] = "1.1.0";
+  makeAvailability(document, "online", announcedNetworkTime ? occurredAt : nullptr);
   publishJson(gatewayStatusTopic, document, 1, true);
 }
 
-uint16_t readLdrAdc() {
-  uint32_t sum = 0;
-  for (uint8_t sample = 0; sample < kLdrSamples; ++sample) {
-    sum += static_cast<uint16_t>(analogRead(LDR_ANALOG_GPIO));
-    delay(3);
+template <typename Number>
+void setMeasurement(JsonObject payload, const char *key, Number value) {
+  if (isfinite(value)) {
+    payload[key] = value;
+  } else {
+    payload[key] = nullptr;
   }
-  return static_cast<uint16_t>(sum / kLdrSamples);
 }
 
 void publishTelemetry() {
-  if (!mqttConnected) return;
-  if (!isfinite(temperatureC) || !isfinite(humidityPct) ||
-      temperatureC < -20.0F || temperatureC > 80.0F ||
-      humidityPct < 0.0F || humidityPct > 100.0F) {
-    Serial.println("DHT22 reading failed validation; telemetry sample skipped.");
-    return;
-  }
-
   char occurredAt[25];
-  if (!utcTimestamp(occurredAt, sizeof(occurredAt))) {
-    Serial.println("Waiting for network time; telemetry sample skipped.");
-    return;
-  }
-
   JsonDocument document;
-  document["schema_version"] = "2.0";
-  document["message_id"] = newUuid();
-  document["occurred_at"] = occurredAt;
-  document["site_id"] = SITE_ID;
-  document["classroom_id"] = CLASSROOM_ID;
-  document["producer_id"] = PRODUCER_ID;
+  addEnvelopeHeader(document, utcTimestamp(occurredAt, sizeof(occurredAt)) ? occurredAt : nullptr);
+  document["schema_version"] = "3.0";
   JsonObject payload = document["payload"].to<JsonObject>();
+  const auto &reading = classroom_sensors::latest();
   payload["sensor_id"] = SENSOR_ID;
-  payload["temperature_c"] = temperatureC;
-  payload["relative_humidity_pct"] = humidityPct;
-  payload["illuminance_adc"] = ldrAdc;
-  if (millis() - bootedAt >= kPirWarmupMs) {
-    payload["motion_detected"] = motionDetected;
+  payload["boot_id"] = bootId;
+  payload["uptime_ms"] = classroom_sensors::uptimeMs();
+  payload["sample_interval_ms"] = kSampleIntervalMs;
+  setMeasurement(payload, "temperature_c", reading.temperatureC);
+  setMeasurement(payload, "relative_humidity_pct", reading.humidityPct);
+  setMeasurement(payload, "illuminance_lux", reading.lux);
+  const bool pirReady = classroom_sensors::pirReady();
+  if (pirReady) {
+    payload["motion_detected"] = classroom_sensors::motionDetected();
   } else {
     payload["motion_detected"] = nullptr;
   }
-  payload["sample_interval_ms"] = kReadIntervalMs;
+  setMeasurement(payload, "voltage_v", reading.voltageV);
+  setMeasurement(payload, "current_a", reading.currentA);
+  setMeasurement(payload, "active_power_w", reading.powerW);
+  setMeasurement(payload, "energy_wh_total", reading.energyWh);
+  setMeasurement(payload, "energy_kwh_total", reading.energyWh / 1000.0);
+  payload["energy_storage_available"] = reading.energyStorageAvailable;
+  JsonObject relays = payload["relays"].to<JsonObject>();
+  relays["light"] = devices[kLight].isOn;
+  relays["fan"] = devices[kFan].isOn;
+  relays["air_conditioner"] = devices[kAirConditioner].isOn;
+  JsonObject sensors = payload["sensors"].to<JsonObject>();
+  sensors["dht22_available"] = isfinite(reading.temperatureC) || isfinite(reading.humidityPct);
+  sensors["pir_ready"] = pirReady;
+  sensors["bh1750_available"] = reading.bh1750Available;
+  sensors["bh1750_fresh"] = reading.bh1750Fresh;
+  if (isfinite(reading.lux)) {
+    sensors["bh1750_age_ms"] = reading.luxAgeMs;
+  } else {
+    sensors["bh1750_age_ms"] = nullptr;
+  }
+  sensors["ina219_available"] = reading.ina219Available;
   if (!publishJson(telemetryTopic, document, 1, false)) {
     Serial.println("MQTT telemetry publish was not queued.");
   }
@@ -475,8 +464,7 @@ void publishAcknowledgement(
   payload["status"] = status;
   payload["reason_code"] = reasonCode;
   JsonObject reportedState = payload["reported_state"].to<JsonObject>();
-  reportedState["on"] = device.isOn;
-  reportedState["mode"] = modeName(device);
+  addReportedState(reportedState, device);
   reportedState["state_version"] = stateVersion;
   if (strcmp(status, "applied") == 0) {
     payload["applied_at"] = occurredAt;
@@ -589,15 +577,18 @@ void processCommand(const QueuedCommand &command) {
   bool requestedPower = false;
   bool requestedMode = false;
   bool targetManualMode = false;
+  bool releaseUrgency = false;
+  uint64_t urgencyUntilMs = 0;
   if (valid && strcmp(action, "set_power") == 0) {
     const char *requestedModeName = value["mode"] | "";
     const char *source = value["source"] | "";
     const bool hasSource = value["source"].is<const char *>();
-    if ((value.size() != 2 && value.size() != 3) ||
+    const char *urgencyDeadline = value["urgency_until"] | static_cast<const char *>(nullptr);
+    const bool hasUrgencyDeadline = urgencyDeadline != nullptr && strcmp(source, "urgency") == 0;
+    if (value.size() != 2 + static_cast<size_t>(hasSource) + static_cast<size_t>(hasUrgencyDeadline) ||
         !value["on"].is<bool>() ||
         (strcmp(requestedModeName, "manual") != 0 &&
-         strcmp(requestedModeName, "auto") != 0) ||
-        (value.size() == 3 && !hasSource)) {
+         strcmp(requestedModeName, "auto") != 0)) {
       reasonCode = "unsupported_power_value";
       valid = false;
     } else {
@@ -613,13 +604,31 @@ void processCommand(const QueuedCommand &command) {
         if (targetManualMode || device.manualMode) {
           reasonCode = "manual_mode_priority";
           valid = false;
+        } else if (kLocalAutomation) {
+          reasonCode = "firmware_automation_priority";
+          valid = false;
         }
       } else if (strcmp(effectiveSource, "urgency") == 0 ||
                  strcmp(effectiveSource, "urgency_timeout") == 0 ||
+                 strcmp(effectiveSource, "urgency_restore") == 0 ||
                  strcmp(effectiveSource, "manual_restore") == 0) {
         if (targetManualMode != device.manualMode) {
           reasonCode = "mode_mismatch";
           valid = false;
+        } else if (strcmp(effectiveSource, "urgency") == 0) {
+          time_t deadline = occurred + kUrgencySeconds;
+          if ((hasUrgencyDeadline && !parseUtcTimestamp(urgencyDeadline, deadline)) ||
+              deadline <= now || deadline > now + kUrgencySeconds + 5) {
+            reasonCode = "invalid_urgency_deadline";
+            valid = false;
+          } else if (kLocalAutomation) {
+            const uint64_t uptime = classroom_sensors::uptimeMs();
+            urgencyUntilMs = !hasUrgencyDeadline && device.urgencyUntilMs > uptime
+                ? device.urgencyUntilMs
+                : uptime + static_cast<uint64_t>(deadline - now) * 1000;
+          }
+        } else {
+          releaseUrgency = true;
         }
       } else {
         reasonCode = "unsupported_command_source";
@@ -655,7 +664,13 @@ void processCommand(const QueuedCommand &command) {
     setDeviceMode(device, targetManualMode);
   }
   if (strcmp(action, "set_power") == 0) {
+    if (urgencyUntilMs != 0 && device.urgencyUntilMs == 0) {
+      device.powerBeforeUrgency = device.isOn;
+    }
+    if (releaseUrgency || urgencyUntilMs != 0) device.urgencyUntilMs = urgencyUntilMs;
     setDeviceOutput(device, requestedPower);
+  } else if (requestedMode && !targetManualMode) {
+    updateLocalAutomation();
   }
   Serial.printf(
       "Applied MQTT command %s to %s: %s (%s)\n",
@@ -708,10 +723,14 @@ void acceptIncomingMqttMessage(
 
 void connectMqtt() {
   if (!WiFi.isConnected() || mqttConnected || mqttConnecting) return;
-  gatewayWillPayload = availabilityEnvelope("offline");
+  JsonDocument will;
+  makeAvailability(will, "offline", nullptr);
+  gatewayWillPayload = "";
+  serializeJson(will, gatewayWillPayload);
   if (gatewayWillPayload.isEmpty()) return;
   mqttConnecting = true;
   lastMqttAttemptAt = millis();
+  announcedNetworkTime = false;
   mqttClient.setWill(
       gatewayStatusTopic.c_str(),
       1,
@@ -725,7 +744,7 @@ void publishTelemetryAndStates() {
   // AsyncMqttClient serializes QoS 1 publications. Never accumulate old
   // routine snapshots behind an unacknowledged batch. Sensor acquisition
   // continues, and command state/acknowledgement publications bypass this gate.
-  if (!mqttConnected || !mqttTelemetryReady.load() || pendingMqttPublishes.load() != 0) {
+  if (!mqttConnected || pendingMqttPublishes.load() != 0) {
     return;
   }
   publishTelemetry();
@@ -734,13 +753,7 @@ void publishTelemetryAndStates() {
   }
 }
 
-void readSensors() {
-  temperatureC = dht.readTemperature();
-  humidityPct = dht.readHumidity();
-  ldrAdc = readLdrAdc();
-  currentAdc = static_cast<uint16_t>(analogRead(ACS712_ANALOG_GPIO));
-  motionDetected = digitalRead(PIR_GPIO) == HIGH;
-
+void printStatus() {
   Serial.println();
   Serial.println("================================");
   char sampledAt[25];
@@ -750,14 +763,8 @@ void readSensors() {
       mqttConnected ? "connected" : mqttConnecting ? "connecting" : "disconnected",
       static_cast<unsigned long>(pendingMqttPublishes.load()),
       static_cast<int>(WiFi.RSSI()));
-  Serial.printf("PIR Motion: %s\n", motionDetected ? "DETECTED" : "NOT DETECTED");
-  if (!isfinite(temperatureC) || !isfinite(humidityPct)) {
-    Serial.println("DHT22: READ ERROR");
-  } else {
-    Serial.printf("Temperature: %.1f C\nHumidity: %.1f %%\n", temperatureC, humidityPct);
-  }
-  Serial.printf("LDR ADC (0-4095): %u\nCurrent ADC (raw): %u\n", ldrAdc, currentAdc);
-  Serial.println("-------- DEVICE STATUS --------");
+  classroom_sensors::printReadings();
+  Serial.println("-------- RELAY COMMANDS --------");
   for (const RelayDevice &device : devices) {
     Serial.printf(
         "%s: logical %s (%s) | GPIO %u=%s | active-%s\n",
@@ -768,8 +775,7 @@ void readSensors() {
         digitalRead(device.pin) == HIGH ? "HIGH" : "LOW",
         device.activeLow ? "LOW" : "HIGH");
   }
-  Serial.println("GPIO levels are pin readback, not confirmation of the connected load.");
-  Serial.println("PIR is reported as a sensor observation; the backend policy controls outputs.");
+  Serial.printf("Auto controller: %s.\n", kLocalAutomation ? "ESP32" : "backend");
   Serial.println("================================");
 }
 
@@ -777,29 +783,23 @@ void readSensors() {
 
 void setup() {
   Serial.begin(115200);
-  bootedAt = millis();
-  dht.begin();
-  pinMode(PIR_GPIO, INPUT);
-  pinMode(ACS712_ANALOG_GPIO, INPUT);
-  pinMode(LDR_ANALOG_GPIO, INPUT);
-  analogReadResolution(12);
-  analogSetPinAttenuation(ACS712_ANALOG_GPIO, ADC_11db);
-  analogSetPinAttenuation(LDR_ANALOG_GPIO, ADC_11db);
-
   for (RelayDevice &device : devices) {
     // Preload the device's OFF level before enabling its output driver.
     controlOutput(device, false);
     pinMode(device.pin, OUTPUT);
     controlOutput(device, false);
+    Serial.printf("Relay %s -> GPIO %u\n", device.name, static_cast<unsigned int>(device.pin));
   }
+  classroom_sensors::begin(true);
 
   preferences.begin("aceo-control", false);
   stateVersion = preferences.getUInt("stateVersion", 0);
+  reservedStateVersion = stateVersion;
+  advanceStateVersion();
   loadReceipts();
   commandQueue = xQueueCreate(4, sizeof(QueuedCommand));
   if (commandQueue == nullptr) {
-    Serial.println("FATAL: Could not allocate MQTT command queue.");
-    while (true) delay(1000);
+    Serial.println("Could not allocate MQTT command queue; local monitoring continues.");
   }
 
   telemetryTopic = makeTopic("telemetry/environment");
@@ -821,22 +821,19 @@ void setup() {
   }
   mqttClient.onConnect([](bool) {
     // A clean session has discarded publications from the previous connection.
-    mqttTelemetryReady.store(false);
     pendingMqttPublishes.store(0);
-    mqttConnected = true;
-    mqttConnecting = false;
     Serial.println("MQTT connected.");
     for (const String &topic : commandTopics) {
       mqttClient.subscribe(topic.c_str(), 1);
     }
-    publishGatewayAvailability("online");
-    publishAllDeviceStates();
-    mqttTelemetryReady.store(true);
+    mqttAnnouncementPending.store(true);
+    mqttConnected.store(true);
+    mqttConnecting.store(false);
   });
   mqttClient.onDisconnect([](AsyncMqttClientDisconnectReason reason) {
-    mqttTelemetryReady.store(false);
     mqttConnected = false;
     mqttConnecting = false;
+    mqttAnnouncementPending.store(false);
     Serial.printf("MQTT disconnected (reason %d).\n", static_cast<int>(reason));
   });
   mqttClient.onPublish([](uint16_t) { completeMqttPublish(); });
@@ -854,7 +851,6 @@ void setup() {
     if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
       Serial.print("Wi-Fi connected. ESP32 IP: ");
       Serial.println(WiFi.localIP());
-      connectMqtt();
     } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
       mqttConnected = false;
       mqttConnecting = false;
@@ -866,7 +862,7 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
   Serial.println("Connecting to Wi-Fi...");
-  lastSampleAt = millis() - kReadIntervalMs;
+  lastSampleAt = millis() - kSampleIntervalMs;
   lastMqttAttemptAt = millis() - kReconnectIntervalMs;
 }
 
@@ -876,14 +872,26 @@ void loop() {
     connectMqtt();
   }
 
+  const uint32_t now = millis();
+  const bool sampling = now - lastSampleAt >= kSampleIntervalMs;
+  if (sampling) {
+    lastSampleAt = now;
+    classroom_sensors::sample();
+  }
+  updateLocalAutomation();
+
   QueuedCommand command {};
-  if (xQueueReceive(commandQueue, &command, 0) == pdTRUE) {
+  if (commandQueue != nullptr && xQueueReceive(commandQueue, &command, 0) == pdTRUE) {
     processCommand(command);
   }
 
-  if (millis() - lastSampleAt >= kReadIntervalMs) {
-    lastSampleAt = millis();
-    readSensors();
+  if (mqttConnected && (mqttAnnouncementPending.exchange(false) ||
+          (!announcedNetworkTime && time(nullptr) >= 1700000000))) {
+    publishGatewayAvailability();
+    publishAllDeviceStates();
+  }
+  if (sampling) {
+    printStatus();
     publishTelemetryAndStates();
   }
   delay(10);

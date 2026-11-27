@@ -6,21 +6,27 @@ import "react-loading-skeleton/dist/skeleton.css";
 import { AIChat } from "@/src/components/AIChat";
 import { AIInsightPanel } from "@/src/components/AIInsightPanel";
 import { CameraPreview } from "@/src/components/CameraPreview";
+import { ClassroomRelayCommands, ClassroomSensorStatus } from "@/src/components/ClassroomMonitor";
 import { DeviceControlCard } from "@/src/components/DeviceControlCard";
-import { EnergyCharts } from "@/src/components/EnergyCharts";
+import { EnergyAnalytics } from "@/src/components/EnergyAnalytics";
 import { EnvironmentalAnalyst } from "@/src/components/EnvironmentalAnalyst";
 import { MetricCard } from "@/src/components/MetricCard";
+import { PrototypeStatus, SolarTracker } from "@/src/components/SolarTracker";
 import { useDashboard } from "@/src/hooks/useDashboard";
 import { useLocalHardwareControls } from "@/src/hooks/useLocalHardwareControls";
 import { useEnvironmentTelemetry } from "@/src/hooks/useEnvironmentTelemetry";
 import { useOccupancy } from "@/src/hooks/useOccupancy";
+import { usePrototypeMonitor } from "@/src/hooks/usePrototypeMonitor";
 import { withHardwareState } from "@/src/api/hardware-control-service";
+import type { ClassroomTelemetryView } from "@/src/lib/classroom-telemetry";
+import { accumulatedSolarEnergyMetric, estimatedEnergySavedMetric } from "@/src/lib/prototype-energy";
 import type { DashboardMetric } from "@/src/types/dashboard";
 
 const navigationItems = [
   { id: "overview", label: "Overview" },
   { id: "camera", label: "Camera & AI" },
   { id: "devices", label: "Devices" },
+  { id: "solar", label: "Solar tracker" },
   { id: "analytics", label: "Analytics" },
   { id: "appliances", label: "Appliances tracking" },
 ] as const;
@@ -52,7 +58,11 @@ export function Dashboard() {
   const environment = useEnvironmentTelemetry();
   const occupancy = useOccupancy(data?.classroom_id);
   const hardware = useLocalHardwareControls(data?.classroom_id);
-  const sensorFresh = isEnvironmentTelemetryFresh(environment.telemetry);
+  const prototypeMonitor = usePrototypeMonitor(process.env.NEXT_PUBLIC_CLASSROOM_ID ?? data?.classroom_id);
+  const classroom = prototypeMonitor.classroom;
+  const sensorFresh = classroom.reading
+    ? classroom.fresh
+    : classroom.availability !== "offline" && isEnvironmentTelemetryFresh(environment.telemetry);
   const [clockNow, setClockNow] = useState<number | null>(null);
   const urgencyActive = hardware.urgency?.status === "monitoring";
   const urgencySecondsRemaining =
@@ -81,7 +91,7 @@ export function Dashboard() {
     return () => window.clearInterval(timer);
   }, [urgencyActive]);
 
-  if (loading && !data) {
+  if (loading && !data && activeSection !== "solar" && activeSection !== "analytics") {
     return (
       <main className="dashboard-shell dashboard-loading" aria-busy="true">
         <Skeleton height={64} borderRadius={18} />
@@ -97,9 +107,24 @@ export function Dashboard() {
   if (!data) {
     return (
       <main className="dashboard-shell">
-        <div className="inline-alert" role="alert">
-          {error ?? "No classroom data is available."} Retrying automatically.
-        </div>
+        {activeSection === "solar" ? (
+          <>
+            <a href="#overview">Dashboard overview</a>
+            <SolarTracker {...prototypeMonitor} />
+          </>
+        ) : activeSection === "analytics" ? (
+          <>
+            <a href="#overview">Dashboard overview</a>
+            <EnergyAnalytics {...prototypeMonitor} />
+          </>
+        ) : (
+          <>
+            <div className="inline-alert" role="alert">
+              {error ?? "No classroom data is available."} Retrying automatically.
+            </div>
+            <a href="#solar">Solar tracker</a>
+          </>
+        )}
       </main>
     );
   }
@@ -108,6 +133,11 @@ export function Dashboard() {
     ? data.devices.map((device) => withHardwareState(device, hardware.deviceStates?.devices, hardware.error, hardware.pendingDeviceIds))
     : data.devices;
   const handleDeviceControl = hardware.enabled ? hardware.requestControl : requestControl;
+  const lastSensorSampleAt = classroom.reading?.received_at ?? environment.telemetry?.observed_at;
+  const sensorConnectionLabel = classroom.availability === "offline" ? "ESP32 offline"
+    : classroom.availability === "online" ? (sensorFresh ? "ESP32 online" : "ESP32 online · readings unavailable")
+      : sensorFresh ? "Live sensors" : environment.loaded ? "Sensor feed unavailable" : "Connecting sensors";
+  const motion = classroom.reading ? classroom.reading.payload.motion_detected : environment.telemetry?.motion_detected;
 
   return (
     <div className="app-frame">
@@ -159,26 +189,26 @@ export function Dashboard() {
                 </span>
               </div>
             )}
-            <label className="scenario-picker">
+            {activeSection !== "analytics" && <label className="scenario-picker">
               <span>Demo state</span>
               <select defaultValue="live" onChange={(event) => setScenario(event.target.value as "live" | "device_offline" | "connection_loss")}>
                 <option value="live">Demo panels: live</option>
                 <option value="device_offline">Fan disconnected</option>
                 <option value="connection_loss">Demo feed offline</option>
               </select>
-            </label>
+            </label>}
             <span className={`connection-pill connection-pill--${sensorFresh ? "connected" : "disconnected"}`}>
-              <i /> {sensorFresh ? "Live sensors" : environment.loaded ? "Sensor feed unavailable" : "Connecting sensors"}
+              <i /> {sensorConnectionLabel}
             </span>
             <button className="avatar" type="button" aria-label="Open user menu">JM</button>
           </div>
         </header>
 
-        {error && <div className="inline-alert" role="alert">{error}</div>}
+        {error && activeSection !== "analytics" && <div className="inline-alert" role="alert">{error}</div>}
         {hardware.enabled && hardware.error && (
           <div className="inline-alert" role="alert">{hardware.error}</div>
         )}
-        {data.connection === "disconnected" && (
+        {data.connection === "disconnected" && activeSection !== "analytics" && (
           <div className="connection-banner" role="status">
             <div><strong>Demo dashboard feed unavailable</strong><span>Live environmental sensors continue polling independently.</span></div>
             <span>Demo panels will retry automatically.</span>
@@ -193,22 +223,26 @@ export function Dashboard() {
                 <h2 id="overview-title">Live overview</h2>
               </div>
               <p>
-                {environment.telemetry?.observed_at
-                  ? `Sensor sample ${new Date(environment.telemetry.observed_at).toLocaleTimeString()} · other dashboard panels use demo data`
-                  : "Waiting for live sensors · other dashboard panels use demo data"}
+                {lastSensorSampleAt
+                  ? `Latest sensor sample ${new Date(lastSensorSampleAt).toLocaleTimeString()}`
+                  : "Waiting for live sensors"}
               </p>
             </div>
             <div className="metric-grid">
-              {data.metrics.map((metric) => (
+              {data.metrics.filter((metric) => metric.id !== "current_power" && metric.id !== "energy_saved").map((metric) => (
                 <MetricCard
                   key={metric.id}
                   metric={withLiveOccupancyReading(
-                    withLiveEnvironmentReading(metric, environment),
+                    withClassroomReading(metric, classroom, environment),
                     occupancy,
                   )}
                 />
               ))}
+              <MetricCard metric={accumulatedSolarEnergyMetric(prototypeMonitor.snapshot, prototypeMonitor.error, data.last_updated_at)} />
+              <MetricCard metric={estimatedEnergySavedMetric(prototypeMonitor.snapshot, classroom, data.last_updated_at)} />
             </div>
+            <ClassroomSensorStatus view={classroom} />
+            <PrototypeStatus snapshot={prototypeMonitor.snapshot} error={prototypeMonitor.error} />
           </section>
         )}
 
@@ -245,10 +279,10 @@ export function Dashboard() {
                   <strong>{hardware.mode === "remote" ? "Authenticated Cloudflare ESP32 controls" : "Local ESP32 controls"} · digital ON/OFF only</strong>
                   <span>
                     Auto/Manual and relay state come from the controller. Commands wait for ESP32 acknowledgement.
-                    PIR motion: {sensorFresh && environment.telemetry?.motion_detected !== null
-                      ? environment.telemetry?.motion_detected ? "detected" : "not detected"
+                    PIR motion: {sensorFresh && motion != null
+                      ? motion ? "detected" : "not detected"
                       : "unknown"}.
-                    Fan speed, brightness, AC setpoint, and wattage are unsupported/demo-only.
+                    Fan speed, brightness, AC setpoint, and per-appliance power are demo features.
                   </span>
                 </div>
               ) : (
@@ -258,21 +292,16 @@ export function Dashboard() {
                 </div>
               )}
             </div>
+            <ClassroomRelayCommands view={classroom} />
             <div className="device-grid">
               {displayedDevices.map((device) => <DeviceControlCard key={device.id} device={device} onRequest={handleDeviceControl} compact />)}
             </div>
           </section>
         )}
 
-        {activeSection === "analytics" && (
-          <section id="analytics" className="analytics-section" aria-labelledby="analytics-title">
-            <div className="section-heading">
-              <div><p className="eyebrow">Demo data</p><h2 id="analytics-title">Energy analytics</h2></div>
-              <p>Illustrative only · no calibrated power or energy meter is connected</p>
-            </div>
-            <EnergyCharts charts={data.charts} />
-          </section>
-        )}
+        {activeSection === "solar" && <SolarTracker {...prototypeMonitor} />}
+
+        {activeSection === "analytics" && <EnergyAnalytics {...prototypeMonitor} />}
 
         {activeSection === "appliances" && <EnvironmentalAnalyst classroomId={data.classroom_id} />}
 
@@ -312,7 +341,14 @@ function withLiveOccupancyReading(
   metric: DashboardMetric,
   live: ReturnType<typeof useOccupancy>,
 ): DashboardMetric {
-  if (metric.id !== "occupancy" || !live.enabled) return metric;
+  if (metric.id !== "occupancy") return metric;
+  if (!live.enabled) return {
+    ...metric,
+    label: "Demo occupancy",
+    detail: "Simulated occupancy",
+    trend_label: "Demo data",
+    status: "unknown",
+  };
 
   const reading = live.occupancy;
   const observedAt = reading?.observed_at ?? null;
@@ -354,6 +390,72 @@ function withLiveOccupancyReading(
       : "No camera reading yet",
     status,
     updated_at: observedAt ?? metric.updated_at,
+  };
+}
+
+function withClassroomReading(
+  metric: DashboardMetric,
+  classroom: ClassroomTelemetryView,
+  legacyEnvironment: ReturnType<typeof useEnvironmentTelemetry>,
+): DashboardMetric {
+  const payload = classroom.reading?.payload;
+  const receivedAt = classroom.reading?.received_at;
+  let { label, unit } = metric;
+  let value: number | null | undefined;
+  let precision = 1;
+  let detail: string;
+  let fresh = classroom.fresh;
+
+  switch (metric.id) {
+    case "temperature":
+      if (!payload) return withLiveEnvironmentReading(metric, legacyEnvironment);
+      value = payload.temperature_c;
+      unit = "°C";
+      detail = "DHT22 reading";
+      break;
+    case "humidity":
+      if (!payload) return withLiveEnvironmentReading(metric, legacyEnvironment);
+      value = payload.relative_humidity_pct;
+      unit = "%";
+      detail = "DHT22 reading";
+      break;
+    case "ambient_light": {
+      if (!payload) return withLiveEnvironmentReading(metric, legacyEnvironment);
+      value = payload.illuminance_lux;
+      unit = "lux";
+      fresh = fresh && payload.sensors.bh1750_fresh;
+      const age = payload.sensors.bh1750_age_ms;
+      const readingAge = age == null ? null : (age + (classroom.sampleAgeMs ?? 0)) / 1_000;
+      detail = !payload.sensors.bh1750_fresh && readingAge !== null
+        ? `Last valid BH1750 reading · ${readingAge.toFixed(1)} s old`
+        : "BH1750 reading";
+      break;
+    }
+    case "energy_today":
+      label = "Energy consumption";
+      unit = "Wh";
+      precision = 3;
+      value = payload?.energy_wh_total;
+      fresh = fresh && payload?.sensors.ina219_available === true;
+      detail = payload?.energy_kwh_total == null
+        ? "Classroom DC circuit"
+        : `${payload.energy_kwh_total.toFixed(6)} kWh · Classroom DC circuit`;
+      break;
+    default:
+      return metric;
+  }
+
+  return {
+    ...metric,
+    label,
+    value: value ?? null,
+    display_value: value == null ? "--" : value.toFixed(precision),
+    unit,
+    detail: value == null ? "Measurement unavailable" : detail,
+    trend: "steady",
+    trend_label: receivedAt ? `Received ${new Date(receivedAt).toLocaleTimeString()}` : "Waiting for ESP32 telemetry",
+    status: value == null ? "unknown" : fresh ? "ok" : "stale",
+    updated_at: receivedAt ?? metric.updated_at,
   };
 }
 

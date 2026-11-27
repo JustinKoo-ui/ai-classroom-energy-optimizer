@@ -16,8 +16,8 @@ workers**:
 - The prediction worker may initially run inside the backend process, then move
   to its own worker without changing its input/output contracts.
 - ESP32 nodes communicate only through the MQTT broker.
-- React communicates with FastAPI over REST. The dashboard polls for updates;
-  WebSocket delivery is deferred.
+- React communicates with FastAPI over REST. Prototype monitoring also
+  supports server-sent events with a polling fallback.
 
 This is simpler to operate than premature microservices while preserving clear
 module boundaries. Scale-out points are MQTT ingestion, CV inference and
@@ -32,7 +32,7 @@ flowchart LR
     CV -->|"aggregate occupancy event"| Broker
     Broker <-->|"telemetry, state, approved commands, acknowledgements"| API["FastAPI backend"]
     API <-->|"SQL"| DB[("PostgreSQL")]
-    API <-->|"REST polling"| UI["React dashboard"]
+    API <-->|"REST and server-sent events"| UI["React dashboard"]
     API --> Predict["60-second departure model"]
     Predict -->|"probability only"| API
 ```
@@ -49,11 +49,18 @@ and command/outbox rows; a separate MQTT dispatcher publishes only persisted
 allowed commands. The ESP32 validates the command, applies per-device digital
 output polarity, and reports the logical state. Fan, yellow lighting, and AC
 are configured active HIGH: logical OFF drives LOW and logical ON drives HIGH.
-Reported state is not physical output feedback. The dashboard
-never connects to MQTT. The LM393 reading is raw ADC counts, not calibrated
-lux; PIR reports motion, not an occupant count.
+Reported state describes the ESP32 output command. The BH1750 reports lux,
+the INA219 measures its connected low-voltage DC circuit, and the PIR reports
+motion. The ESP32 integrates positive INA219 power over time and checkpoints
+its cumulative Wh to NVS. PostgreSQL stores the validated snapshots for the
+dashboard's latest readings and cumulative history.
 
-The local automation policy requests fan ON immediately for fresh occupancy
+Current classroom firmware owns Auto on its relays. With motion, it commands
+fan ON, lighting ON below 300 lux, and AC ON above 26 °C or 65% humidity.
+Without motion it commands all Auto relays OFF. Manual and approved urgency
+commands still go through policy, outbox, dispatch and acknowledgement.
+
+For legacy gateways, the backend automation policy requests fan ON for fresh occupancy
 >= 1. Automatic lighting requires fresh PIR motion first, then fresh valid
 LDR ADC > 1000. No motion or ADC <= 1000 requests OFF, regardless of camera
 count or an active scanning window. AC requires
@@ -74,8 +81,8 @@ JWT signature, issuer and audience. HTTPS terminates at Cloudflare; Workers
 VPC and a QUIC tunnel carry requests to the private backend. The operator
 email is recorded with each policy decision. This is a single-classroom
 prototype, without production equipment interlocks or general classroom RBAC.
-Power/energy measurements and variable actuator controls remain unsupported
-or demo data.
+Advanced variable actuator controls remain unsupported. Measured DC energy
+appears alongside existing runtime estimates.
 
 ## 3. Safety-critical command path
 

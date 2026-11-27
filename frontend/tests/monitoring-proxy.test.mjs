@@ -10,6 +10,8 @@ const CLASSROOM = "26e97d46-7a34-4439-922a-83684bda557d";
 const BASE = `/api/v1/classrooms/${CLASSROOM}`;
 const CAMERA_PATH = `${BASE}/camera/frame`;
 const STREAM_PATH = `${BASE}/camera/stream`;
+const PROTOTYPE_PATH = `${BASE}/prototype-monitor`;
+const PROTOTYPE_STREAM_PATH = `${PROTOTYPE_PATH}/stream`;
 const URGENCY_PATH = `${BASE}/urgency`;
 const BRIDGE_SECRET = "unit-test-private-bridge-secret-with-more-than-32-characters";
 const REPORT_TOKEN = "unit-test-separate-report-token";
@@ -190,6 +192,55 @@ test("camera stream forwards bounded backend availability errors", async () => {
   assert.equal(response.status, 503);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.ok(!(await response.text()).includes(BRIDGE_SECRET));
+});
+
+test("prototype stream forwards a snapshot immediately and propagates cancellation", async () => {
+  const first = new TextEncoder().encode("event: snapshot\ndata: {}\n\n");
+  let cancelled = false;
+  const source = new ReadableStream({
+    start(controller) { controller.enqueue(first); },
+    cancel() { cancelled = true; },
+  });
+  const h = harness({ upstream: () => new Response(source, { headers: {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Set-Cookie": "private-cookie", "X-Classroom-Proxy-Token": BRIDGE_SECRET,
+  } }) });
+  const controller = new AbortController();
+  const response = await h.proxy(await browserRequest(PROTOTYPE_STREAM_PATH, {
+    signal: controller.signal,
+  }), h.env);
+  assert.equal(response.status, 200);
+  assert.equal(h.upstreamRequests[0].headers.get("Accept"), "text/event-stream");
+  assert.equal(h.upstreamRequests[0].headers.get("X-Classroom-Proxy-Token"), BRIDGE_SECRET);
+  assert.equal(response.headers.get("Content-Type"), "text/event-stream");
+  assert.equal(response.headers.get("Cache-Control"), "no-store, no-transform");
+  assert.deepEqual([...response.headers.keys()].sort(), ["cache-control", "content-type", "x-content-type-options"]);
+  const reader = response.body.getReader();
+  assert.deepEqual((await reader.read()).value, first);
+  controller.abort();
+  await assert.rejects(reader.read(), { name: "AbortError" });
+  assert.equal(cancelled, true);
+});
+
+test("prototype REST and stream keep the configured auth, method and classroom scope", async () => {
+  const h = harness();
+  for (const path of [PROTOTYPE_PATH, PROTOTYPE_STREAM_PATH]) {
+    for (const [requestPath, options, expected] of [
+      [path, { token: null }, 401],
+      [path, { headers: { Origin: "https://unauthorized.example" } }, 403],
+      [path + "?override=true", {}, 400],
+      [path, { method: "POST", body: "{}" }, 405],
+      [path.replace(CLASSROOM, "00000000-0000-4000-8000-000000000001"), {}, 404],
+    ]) {
+      assert.equal((await h.proxy(await browserRequest(requestPath, options), h.env)).status, expected);
+    }
+  }
+  const expired = await assertion({ exp: Math.floor(Date.now() / 1000) - 1 });
+  assert.equal((await h.proxy(await browserRequest(PROTOTYPE_STREAM_PATH, { token: expired }), h.env)).status, 401);
+  assert.equal(h.upstreamRequests.length, 0);
+  assert.equal((await h.proxy(await browserRequest(PROTOTYPE_PATH), h.env)).status, 200);
+  assert.equal(h.upstreamRequests[0].headers.get("Accept"), "application/json");
+  assert.equal((await h.proxy(await browserRequest(PROTOTYPE_STREAM_PATH), h.env)).status, 502);
 });
 
 for (const [method, path] of [

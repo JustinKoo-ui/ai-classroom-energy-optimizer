@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Generic, TypeVar
 from uuid import UUID
@@ -16,8 +17,11 @@ from .common import (
     UtcDateTime,
 )
 
-
 PayloadT = TypeVar("PayloadT")
+
+
+def format_mqtt_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class MqttEnvelope(ContractModel, Generic[PayloadT]):

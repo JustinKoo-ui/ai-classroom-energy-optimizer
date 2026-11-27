@@ -20,8 +20,4 @@
 #define LIGHT_DEVICE_ID "d7958a13-4c75-47e8-8b5e-4f4e00000012"
 #define AC_DEVICE_ID "d7958a13-4c75-47e8-8b5e-4f4e00000014"
 
-// Verify each GPIO against the exact ESP32 board and sensor breakout.
-#define DHT22_GPIO 4
-#define ACS712_ANALOG_GPIO 34
-#define LDR_ANALOG_GPIO 35
-#define PIR_GPIO 21
+// Sensor and relay GPIO assignments are in classroom_config.h.

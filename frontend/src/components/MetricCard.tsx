@@ -7,6 +7,7 @@ const metricCodes: Record<DashboardMetric["id"], string> = {
   ambient_light: "LX",
   current_power: "PW",
   energy_today: "EN",
+  solar_energy: "SE",
   energy_saved: "SV",
 };
 

@@ -21,6 +21,7 @@ const MAX_REPORT_BYTES = 4096;
 const MAX_CHAT_BYTES = 32_768;
 const MAX_CAMERA_FRAME_BYTES = 2 * 1024 * 1024;
 const CAMERA_STREAM_TYPE = "multipart/x-mixed-replace; boundary=classroom-frame";
+const PROTOTYPE_STREAM_TYPE = "text/event-stream";
 const NO_STORE = { "Cache-Control": "no-store" };
 const RELAY_IDS = new Set([
   "d7958a13-4c75-47e8-8b5e-4f4e00000027",
@@ -108,7 +109,13 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     const isCameraStream = url.pathname === `${base}/camera/stream`;
     const isCameraSnapshot = url.pathname === `${base}/camera/frame`;
     const isCamera = isCameraStream || isCameraSnapshot;
-    const readPaths = new Set([`${base}/telemetry/latest`, `${base}/occupancy/current`, `${base}/analytics`, `${base}/camera/frame`, `${base}/camera/stream`]);
+    const isPrototypeStream = url.pathname === `${base}/prototype-monitor/stream`;
+    const isPrototypeMonitor = isPrototypeStream || url.pathname === `${base}/prototype-monitor`;
+    const readPaths = new Set([
+      `${base}/telemetry/latest`, `${base}/occupancy/current`, `${base}/analytics`,
+      `${base}/camera/frame`, `${base}/camera/stream`,
+      `${base}/prototype-monitor`, `${base}/prototype-monitor/stream`,
+    ]);
     const reportPath = `${base}/analytics/report`;
     const chatPath = `${base}/analytics/chat`;
     const isAiPost = url.pathname === reportPath || url.pathname === chatPath;
@@ -127,6 +134,7 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     if (request.method !== expectedMethod) return error(405, "This API method is not allowed.");
     if (isControl && url.search) return error(400, "Control routes do not accept query parameters.");
     if (isCamera && url.search) return error(400, "Camera preview does not accept query parameters.");
+    if (isPrototypeMonitor && url.search) return error(400, "Prototype monitoring does not accept query parameters.");
 
     const access = accessConfiguration(env);
     const secret = env.CLASSROOM_API_PROXY_TOKEN;
@@ -150,6 +158,7 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
       return error(401, "Sign in through Cloudflare Access to use monitoring.");
     }
     let operatorEmail: string | undefined;
+    let streamExpiresAt = 0;
     try {
       let resolver = resolvers.get(access.issuer);
       if (!resolver) {
@@ -169,6 +178,7 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
         requiredClaims: ["iss", "aud", "sub", "iat", "exp"],
         clockTolerance: 5,
       });
+      if (isPrototypeStream) streamExpiresAt = (payload.exp ?? 0) * 1000;
       if (isControl) {
         const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !operators.has(email)) {
@@ -225,7 +235,8 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
     // Construct fresh headers: never trust browser-supplied bridge/forwarding
     // headers, cookies, identity assertions, or an upstream address from input.
     const headers = new Headers({
-      Accept: isCameraStream ? "multipart/x-mixed-replace" : isCameraSnapshot ? "image/jpeg" : "application/json",
+      Accept: isPrototypeStream ? PROTOTYPE_STREAM_TYPE
+        : isCameraStream ? "multipart/x-mixed-replace" : isCameraSnapshot ? "image/jpeg" : "application/json",
       "X-Classroom-Proxy-Token": secret,
     });
     if (operatorEmail) headers.set("X-Classroom-Operator-Email", operatorEmail);
@@ -243,18 +254,31 @@ export function createMonitoringProxy(options: { fetchJwks?: FetchImplementation
       }
     }
     const upstreamUrl = new URL(`${url.pathname}${url.search}`, "http://host.docker.internal:8000");
+    // Both streaming endpoints rotate after one minute on the backend.
+    const timeoutMs = isPrototypeStream ? Math.min(75_000, streamExpiresAt - Date.now())
+      : isCameraStream ? 75_000 : isAiPost ? 90_000 : 15_000;
+    if (timeoutMs <= 0) return error(401, "Your monitoring session expired. Sign in again.");
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
     try {
       const response = await env.CLASSROOM_API.fetch(new Request(upstreamUrl, {
         method: request.method,
         headers,
         body: body ? new Uint8Array(body).buffer : undefined,
         redirect: "manual",
-        // Camera sessions close after 60 seconds on the backend. Keep the
-        // cancellation budget long enough to deliver the entire session.
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(
-          isCameraStream ? 75_000 : isAiPost ? 90_000 : 15_000,
-        )]),
+        signal,
       }));
+      if (isPrototypeStream && response.status === 200) {
+        if (!response.body || response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== PROTOTYPE_STREAM_TYPE) {
+          await response.body?.cancel();
+          return error(502, "The monitoring API returned an unexpected stream response.");
+        }
+        const body = response.body.pipeThrough(new TransformStream(), { signal });
+        return new Response(body, { headers: {
+          "Cache-Control": "no-store, no-transform",
+          "Content-Type": PROTOTYPE_STREAM_TYPE,
+          "X-Content-Type-Options": "nosniff",
+        } });
+      }
       if (isCameraStream && response.status === 200) {
         if (!response.body || !/^multipart\/x-mixed-replace;\s*boundary="?classroom-frame"?$/i.test(
           response.headers.get("Content-Type")?.trim() ?? "",

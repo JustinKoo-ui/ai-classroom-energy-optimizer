@@ -14,12 +14,18 @@ topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a
 user aceo-cv-worker
 topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/occupancy/observation
 
+user aceo-esp32-solar-tracker
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/solar/solar-tracker-esp32/telemetry
+topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/solar/solar-tracker-esp32/status
+
 user aceo-backend-ingestion
 topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/telemetry/environment
 topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/device/+/state
 topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/+/ack
 topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/gateway/+/status
 topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/occupancy/observation
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/solar/+/telemetry
+topic read aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/solar/+/status
 
 user aceo-backend-dispatcher
 topic write aceo/v1/c7ef6d75-7c12-461a-bb49-73f917c3357d/26e97d46-7a34-4439-922a-83684bda557d/command/+/set

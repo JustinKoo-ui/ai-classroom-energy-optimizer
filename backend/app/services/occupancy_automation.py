@@ -17,9 +17,11 @@ from app.domain.local_hardware import (
     LOCAL_CLASSROOM_ID,
     LOCAL_OPERATOR_ID,
 )
+from app.schemas.mqtt import format_mqtt_timestamp
 from app.services.occupancy_automation_policy import (
     DEVICE_NAMES,
     OCCUPANCY_THRESHOLD,
+    URGENCY_DURATION,
     AutomationInputs,
     AutomationState,
     DevicePolicyState,
@@ -132,7 +134,7 @@ async def evaluate_local_automation(
         environment_result = await session.execute(
             text(
                 """
-                SELECT temperature_c, relative_humidity_pct, illuminance_adc,
+                SELECT temperature_c, relative_humidity_pct, illuminance_adc, illuminance_lux,
                        motion_detected, sample_interval_ms, occurred_at
                 FROM environment_readings
                 WHERE classroom_id = :classroom_id
@@ -158,13 +160,24 @@ async def evaluate_local_automation(
             environment_age is not None
             and timedelta(0) <= environment_age <= max_environment_age
         )
+        environment_values = environment_row or {}
+        temperature, humidity, lux = (
+            float(value) if value is not None else None
+            for value in (
+                environment_values.get("temperature_c"),
+                environment_values.get("relative_humidity_pct"),
+                environment_values.get("illuminance_lux"),
+            )
+        )
+        ldr_adc = environment_values.get("illuminance_adc")
+        pir_motion = environment_values.get("motion_detected")
 
         device_result = await session.execute(
             text(
                 """
                 SELECT d.id, d.enabled, d.capabilities,
                        ds.operational_status, ds.reported_state, ds.fault_codes,
-                       ds.last_seen_at,
+                       ds.last_seen_at, ds.reported_at,
                        pending.id AS pending_command_id,
                        recent.applied_at AS previous_applied_at
                 FROM devices AS d
@@ -197,6 +210,9 @@ async def evaluate_local_automation(
             next(name for name, device_id in DEVICE_IDS.items() if row["id"] == device_id): row
             for row in device_result.mappings().all()
         }
+        firmware_automation = any(
+            _firmware_owns_automation(row, current_time) for row in device_rows.values()
+        )
         device_states: dict[str, DevicePolicyState] = {}
         for name in DEVICE_NAMES:
             row = device_rows.get(name)
@@ -244,32 +260,13 @@ async def evaluate_local_automation(
                 now=current_time,
                 occupancy_count=occupancy_count,
                 occupancy_fresh=occupancy_fresh,
-                temperature_c=(
-                    float(environment_row["temperature_c"])
-                    if environment_row is not None and environment_fresh
-                    else None
-                ),
-                humidity_pct=(
-                    float(environment_row["relative_humidity_pct"])
-                    if environment_row is not None and environment_fresh
-                    else None
-                ),
+                temperature_c=temperature if environment_fresh else None,
+                humidity_pct=humidity if environment_fresh else None,
                 environment_fresh=environment_fresh,
-                ldr_adc=(
-                    environment_row["illuminance_adc"]
-                    if environment_row is not None and environment_fresh
-                    else None
-                ),
-                pir_motion=(
-                    environment_row["motion_detected"]
-                    if environment_row is not None and environment_fresh
-                    else None
-                ),
-                pir_fresh=(
-                    environment_fresh
-                    and environment_row is not None
-                    and environment_row["motion_detected"] is not None
-                ),
+                ldr_adc=ldr_adc if environment_fresh else None,
+                illuminance_lux=lux if environment_fresh else None,
+                pir_motion=pir_motion if environment_fresh else None,
+                pir_fresh=environment_fresh and pir_motion is not None,
                 devices=device_states,
             ),
         )
@@ -324,22 +321,11 @@ async def evaluate_local_automation(
             "occupancy_count": occupancy_count,
             "occupancy_fresh": occupancy_fresh,
             "occupancy_observed_at": _iso(occupancy_at),
-            "temperature_c": (
-                float(environment_row["temperature_c"])
-                if environment_row is not None
-                else None
-            ),
-            "relative_humidity_pct": (
-                float(environment_row["relative_humidity_pct"])
-                if environment_row is not None
-                else None
-            ),
-            "illuminance_adc": (
-                environment_row["illuminance_adc"] if environment_row is not None else None
-            ),
-            "motion_detected": (
-                environment_row["motion_detected"] if environment_row is not None else None
-            ),
+            "temperature_c": temperature,
+            "relative_humidity_pct": humidity,
+            "illuminance_adc": ldr_adc,
+            "illuminance_lux": lux,
+            "motion_detected": pir_motion,
             "environment_observed_at": _iso(environment_at),
             "environment_fresh": environment_fresh,
             "urgency_active": is_urgency_active,
@@ -360,6 +346,8 @@ async def evaluate_local_automation(
                 "manual_restore",
                 "urgency_restore",
             }
+            if firmware_automation and not privileged_source:
+                continue
             if current_mode == "manual" and not privileged_source:
                 continue
             if device_states[name].on == target:
@@ -372,6 +360,8 @@ async def evaluate_local_automation(
                 "mode": current_mode,
                 "source": source,
             }
+            if firmware_automation and source == "urgency":
+                value["urgency_until"] = format_mqtt_timestamp(state_row["urgency_until"])
             await _persist_allowed_command(
                 session,
                 classroom_id=LOCAL_CLASSROOM_ID,
@@ -445,7 +435,7 @@ async def start_local_urgency(
                 """
                 SELECT d.id, d.enabled, d.capabilities,
                        ds.operational_status, ds.reported_state, ds.fault_codes,
-                       ds.last_seen_at,
+                       ds.last_seen_at, ds.reported_at,
                        pending.id AS pending_command_id,
                        recent.applied_at AS previous_applied_at
                 FROM devices AS d
@@ -490,8 +480,11 @@ async def start_local_urgency(
             name: _reported_policy_state(device_rows[name]["reported_state"])
             for name in DEVICE_NAMES
         }
+        firmware_automation = any(
+            _firmware_owns_automation(row, current_time) for row in device_rows.values()
+        )
         started_at = current_time
-        expires_at = current_time + timedelta(minutes=5)
+        expires_at = current_time + URGENCY_DURATION
         await session.execute(
             text(
                 """
@@ -529,19 +522,19 @@ async def start_local_urgency(
             },
         }
         for name in DEVICE_NAMES:
-            if restore_states[name].on:
+            if restore_states[name].on and not firmware_automation:
                 continue
+            value = {"on": True, "mode": restore_states[name].mode, "source": "urgency"}
+            if firmware_automation:
+                # An already-on auto relay also needs to hold that command until the lease ends.
+                value["urgency_until"] = format_mqtt_timestamp(expires_at)
             await _persist_allowed_command(
                 session,
                 classroom_id=LOCAL_CLASSROOM_ID,
                 device_id=DEVICE_IDS[name],
                 policy_id=policy_id,
                 trigger="override",
-                requested_value={
-                    "on": True,
-                    "mode": restore_states[name].mode,
-                    "source": "urgency",
-                },
+                requested_value=value,
                 requested_by=LOCAL_OPERATOR_ID,
                 reason="User activated five-minute urgency monitoring.",
                 idempotency_key=f"urgency:{DEVICE_IDS[name]}:{uuid4()}",
@@ -694,6 +687,17 @@ async def _persist_allowed_command(
         ),
         {"device_id": device_id, "value": json.dumps(requested_value)},
     )
+
+
+def _firmware_owns_automation(row: Any, now: datetime) -> bool:
+    if (
+        row["enabled"] is not True
+        or row["operational_status"] != "online"
+        or _json_object(row["reported_state"]).get("automation_owner") != "firmware"
+    ):
+        return False
+    reported_at = row["reported_at"]
+    return reported_at is not None and timedelta(0) <= now - reported_at <= DEVICE_STATE_STALE_AFTER
 
 
 def _device_can_apply(row: Any, now: datetime) -> bool:

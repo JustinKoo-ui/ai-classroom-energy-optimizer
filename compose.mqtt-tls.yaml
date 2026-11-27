@@ -1,0 +1,7 @@
+services:
+  mqtt:
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./infra/mosquitto/mosquitto-tls.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./infra/mosquitto/tls:/mosquitto/tls:ro

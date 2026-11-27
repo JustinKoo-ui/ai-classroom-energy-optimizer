@@ -2,14 +2,18 @@
 
 Responsive React dashboard for live classroom occupancy, comfort, AI insight,
 device control and energy analytics. REST loads dashboard data and creates
-durable control requests. The dashboard polls for updates every five seconds
-by default; the browser never connects to MQTT.
+durable control requests. The prototype monitor uses server-sent events and
+falls back to REST polling.
 
-The temperature, humidity and ambient-light cards poll the backend's latest
-sensor endpoint. Other dashboard sections still use `MockDashboardService`
-until their live API contracts and data are implemented. The LM393 light value
-is displayed as raw ADC counts, not lux; PIR data is stored as motion detection
-and is not used as an occupant count.
+The classroom monitor receives DHT22 temperature and humidity, BH1750 lux,
+PIR motion, commanded relay states, and INA219 voltage, current, power and
+cumulative energy through FastAPI. Energy analytics plots classroom DC demand
+and solar generation in watts, and each meter's accumulated energy in
+watt-hours. Both charts show up to 120 recent samples per meter on a shared
+timeline. Each meter has its own counter. The solar counter starts over when
+the tracker restarts or is reset. The legacy sensor endpoint still
+supplies raw ADC counts for older LM393 senders. PIR reports motion, and camera
+occupancy supplies the count.
 
 Camera occupancy can be enabled independently without switching the other
 dashboard panels off demo data. Configure
@@ -37,8 +41,7 @@ classroom changes. Reloading begins a new trend history.
 No trained departure model is connected. The CV publisher currently sends a
 fixed confidence of 0.97, so this card does not present it as measured accuracy
 or prediction confidence. Demo departure probabilities, recommendations and
-model versions are not used by this card. Energy charts keep their existing
-demo data; this change does not call the AI provider or issue device commands.
+model versions are not used by this card.
 The existing authenticated Cloudflare occupancy proxy also supports this card.
 Run `pnpm test:insights` for freshness and observed-trend regression checks.
 
@@ -70,9 +73,8 @@ Cloudflare Access JWTs and checks a private operator email allowlist. The
 backend independently checks the bridge secret, operator and relay scope.
 See [the setup guide](../docs/cloudflare-live.md).
 
-The current board supports digital ON/OFF and Auto/Manual only. Fan speed,
-brightness, AC setpoint, wattage, and energy remain disabled/simulated and are
-never sent as device commands. See the ESP32 setup and safety limits in
+The current board supports digital ON/OFF and Auto/Manual. Voltage, current,
+power and energy are read-only INA219 measurements. See the ESP32 setup and safety limits in
 [`../firmware/esp32/README.md`](../firmware/esp32/README.md).
 
 When hardware controls are enabled, the dashboard also polls urgency status.

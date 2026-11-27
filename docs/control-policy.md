@@ -92,12 +92,21 @@ switches that device to Auto. While manual, occupancy and sensor policy does
 not change that relay. Urgency temporarily takes precedence without changing
 the selected modes and restores prior Manual states when it ends.
 
-For this prototype, a fresh camera count >= 1 immediately requests the fan
+The current classroom ESP32 owns Auto for the relays that report
+`automation_owner: "firmware"`. It requires PIR motion before turning on any
+Auto relay. With motion, the fan runs, lighting requires fresh lux below
+300, and AC requires valid temperature above 26 °C or humidity above 65%.
+The firmware thresholds are configurable. Approved Manual and Urgency
+commands still use the backend policy and MQTT dispatcher.
+
+For backend-owned Auto, a fresh camera count >= 1 immediately requests the fan
 ON. Automatic lighting uses PIR as its first gate, independent of the camera
 count: without fresh PIR motion, the light is OFF even at ADC 4095. Only with
 fresh PIR motion does a fresh valid 12-bit LDR ADC value > 1000 request lighting
 ON. ADC <= 1000 requests OFF even during motion. Both conditions must hold:
-`fresh PIR motion AND fresh valid LDR ADC > 1000`. A stale or invalid input
+`fresh PIR motion AND fresh valid LDR ADC > 1000`. When the classroom ESP32
+is configured for backend-owned Auto, it supplies calibrated BH1750 lux
+and the lighting gate uses fresh lux below 300. A stale or invalid input
 cannot satisfy its gate, so automatic lighting is requested OFF.
 
 A fresh camera count >= 3 starts the continuous AC qualification timer.
@@ -121,7 +130,8 @@ If no occupant is confirmed by timeout, the scan ends. Sustained PIR HIGH
 cannot restart or extend the scan timer. When PIR becomes LOW or stale,
 automatic lighting is requested OFF regardless of LDR or camera occupancy.
 With no confirmed occupancy, the fan and AC remain OFF; only motion together
-with ADC > 1000 can request lighting ON. Unknown/stale occupancy is never
+with a light reading below the configured brightness threshold can request
+lighting ON. Unknown/stale occupancy is never
 reported as a valid zero and resets AC
 qualification. Normal AC qualification also restarts after urgency control.
 Qualification also resets after an unobserved backend evaluation gap longer
@@ -129,20 +139,18 @@ than the occupancy freshness limit, a gap between camera observations longer
 than that limit, or a stored below-three observation within the qualifying
 period, even if the latest count has already recovered.
 
-These are targets evaluated by the existing one-second backend worker, not
-claims of instantaneous physical switching. Per-device Manual priority,
-device freshness, faults, pending commands, cooldowns and acknowledgements
-continue to gate actual commands. The existing telemetry contract requires
-both DHT22 values and skips a sample if either is invalid; this policy change
-does not alter that acquisition or message format.
+The one-second backend worker evaluates these legacy targets. Per-device
+Manual priority, device freshness, faults, pending commands, cooldowns and
+acknowledgements continue to gate commands. Legacy telemetry contracts
+require both DHT22 values. The current classroom snapshot conveys individual
+unavailable readings.
 
 Urgency immediately requests all three relays on and monitors for a fixed
 five minutes. At expiry, a fresh zero count turns all three off. A fresh
 nonzero count resumes the selected per-device policy; unknown occupancy does
 not prove absence and therefore does not trigger the no-presence shutoff.
-All local prototype settings are implemented in the deterministic backend
-policy and its persisted automation state; firmware only validates/applies
-commands and reports actual output state.
+The backend records urgency and sends approved changes through the command
+path. The firmware reports commanded output state.
 
 ## Schedules
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import environment_readings
+from app.schemas.classroom_telemetry import ClassroomTelemetryEnvelope
 from app.schemas.mqtt import (
     EnvironmentTelemetryPayload,
     EnvironmentTelemetryPayloadV2,
@@ -55,9 +56,13 @@ async def insert_environment_reading(
     envelope: (
         MqttEnvelope[EnvironmentTelemetryPayload]
         | MqttEnvelopeV2[EnvironmentTelemetryPayloadV2]
+        | ClassroomTelemetryEnvelope
     ),
 ) -> bool:
     """Persist one reading; return false when its message_id was already seen."""
+    if isinstance(envelope, ClassroomTelemetryEnvelope):
+        return await _insert_classroom_telemetry(session, envelope)
+
     payload = envelope.payload
     if isinstance(payload, EnvironmentTelemetryPayloadV2):
         illuminance_lux = None
@@ -87,6 +92,49 @@ async def insert_environment_reading(
         .returning(environment_readings.c.message_id)
     )
     result = await session.execute(statement)
+    await session.commit()
+    return result.scalar_one_or_none() is not None
+
+
+async def _insert_classroom_telemetry(
+    session: AsyncSession, envelope: ClassroomTelemetryEnvelope
+) -> bool:
+    received_at = datetime.now(UTC)
+    payload = envelope.payload
+    result = await session.execute(
+        text(
+            """
+            INSERT INTO environment_readings (
+                message_id, classroom_id, sensor_id, temperature_c, relative_humidity_pct,
+                illuminance_lux, motion_detected, sample_interval_ms, occurred_at, received_at,
+                device_occurred_at, classroom_telemetry
+            )
+            SELECT :message_id, classroom.id, :sensor_id, :temperature_c, :humidity_pct,
+                   :fresh_lux, :motion_detected, :sample_interval_ms, :occurred_at, :received_at,
+                   :device_occurred_at, CAST(:payload AS jsonb)
+            FROM classrooms AS classroom
+            WHERE classroom.id = :classroom_id AND classroom.site_id = :site_id
+            ON CONFLICT (message_id) DO NOTHING
+            RETURNING message_id
+            """
+        ),
+        {
+            "message_id": envelope.message_id,
+            "site_id": envelope.site_id,
+            "classroom_id": envelope.classroom_id,
+            "sensor_id": payload.sensor_id,
+            "temperature_c": payload.temperature_c,
+            "humidity_pct": payload.relative_humidity_pct,
+            # Existing environment analysis only consumes fresh lux; keep last lux in JSON.
+            "fresh_lux": payload.illuminance_lux if payload.sensors.bh1750_fresh else None,
+            "motion_detected": payload.motion_detected,
+            "sample_interval_ms": payload.sample_interval_ms,
+            "occurred_at": envelope.occurred_at or received_at,
+            "received_at": received_at,
+            "device_occurred_at": envelope.occurred_at,
+            "payload": payload.model_dump_json(),
+        },
+    )
     await session.commit()
     return result.scalar_one_or_none() is not None
 

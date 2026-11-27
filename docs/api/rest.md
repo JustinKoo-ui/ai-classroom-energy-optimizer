@@ -132,15 +132,33 @@ browser only and must not be exposed through a public deployment.
 
 `GET /api/v1/classrooms/{id}/telemetry/latest` returns the latest persisted
 DHT22 temperature/humidity, light sensor reading and PIR motion bit. It reports
-`illuminance_adc` for schema `2.0` senders and `illuminance_lux` only for
-calibrated schema `1.0` senders. The LM393 ADC count is not converted to lux.
+`illuminance_adc` for schema `2.0` senders and `illuminance_lux` for
+calibrated schema `1.0` and valid schema `3.0` readings.
 `freshness` becomes `stale` 15 seconds after the reading timestamp. PIR motion
 is not an occupancy count and must not be interpreted as vacancy.
 
-The dashboard polls this endpoint every five seconds for its temperature,
-humidity and light cards. This is near-real-time REST polling, not a WebSocket.
+The dashboard polls this endpoint for legacy sensors.
 The endpoint accepts direct loopback requests or the authenticated private
 Worker bridge for the configured classroom.
+
+### Classroom prototype monitor
+
+Admitted local or private Worker clients can request
+`GET /api/v1/classrooms/{id}/prototype-monitor` for the latest classroom
+snapshot and bounded DC meter history. `classroom_telemetry` contains the
+message ID, device timestamp when available, server receipt time and the
+[classroom MQTT payload](../mqtt.md#classroom-environment-telemetry-schema-30).
+`energy_history` contains timestamped cumulative Wh points with a valid
+INA219 reading from the 120 most recent classroom samples.
+`classroom_meter_history` contains those samples' receipt times, boot IDs,
+instantaneous power (`active_power_w`), and accumulated energy (`energy_wh_total`).
+Either measurement may be null. Both are null when the INA219 is unavailable.
+The snapshot also includes broker connectivity, relay availability and
+`classroom_telemetry_freshness`.
+
+`GET /api/v1/classrooms/{id}/prototype-monitor/stream` delivers `snapshot`
+events with the latest readings. Clients load historical points from REST and
+append new meter readings from the stream.
 
 ### Latest camera occupancy
 
@@ -302,7 +320,8 @@ are denied. Browser cookies and Access JWTs are not forwarded to FastAPI.
 The local UI sends `set_power` with `{ "on": true|false }` or `set_mode` with
 `{ "mode": "auto"|"manual" }`. Power requests require the latest reported
 mode to be Manual; in Manual mode, PIR and sensor automations do not override
-the selected state. Auto mode is controlled by the backend occupancy policy.
+the selected state. Auto mode uses the ESP32 sensor rules when it reports
+firmware ownership. Other gateways use the backend occupancy policy.
 PIR is not an interlock and a LOW PIR reading does not deny an authorized
 manual command. The UI keeps the last reported state until an `applied`
 acknowledgement arrives.
@@ -316,8 +335,8 @@ not treated as zero. The urgency response reports policy state, not physical
 application; use the device state/command endpoints for acknowledgement.
 
 The seeded relay capabilities include only `set_power` and `set_mode`.
-Temperature setpoint, fan speed, brightness, power, and energy are
-unsupported/simulated and are never sent to the ESP32.
+Temperature setpoint, fan speed and brightness remain demo controls.
+INA219 power and energy measurements are read-only telemetry.
 
 ## Manual overrides
 

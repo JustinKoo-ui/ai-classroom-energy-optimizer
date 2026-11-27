@@ -38,6 +38,7 @@ def _device(name: str, **overrides: Any) -> dict[str, Any]:
         "reported_state": {"on": False, "mode": "auto"},
         "fault_codes": [],
         "last_seen_at": NOW,
+        "reported_at": NOW,
         "pending_command_id": None,
         "previous_applied_at": None,
         **overrides,
@@ -52,9 +53,10 @@ async def _evaluate(
     qualification_interrupted: bool = False,
     occupancy_age: timedelta = timedelta(0),
     environment_age: timedelta = timedelta(0),
-    temperature: float = 27.0,
-    humidity: float = 50.0,
-    ldr: int = 1001,
+    temperature: float | None = 27.0,
+    humidity: float | None = 50.0,
+    ldr: int | None = 1001,
+    lux: float | None = None,
     pir: bool = True,
     devices: list[dict[str, Any]] | None = None,
 ) -> tuple[int, AsyncMock, dict[str, Any]]:
@@ -68,6 +70,7 @@ async def _evaluate(
         "temperature_c": temperature,
         "relative_humidity_pct": humidity,
         "illuminance_adc": ldr,
+        "illuminance_lux": lux,
         "motion_detected": pir,
         "sample_interval_ms": 2000,
         "occurred_at": NOW - environment_age,
@@ -131,6 +134,74 @@ async def test_qualified_main_targets_use_existing_outbox_and_reported_modes(
         assert command["input_snapshot"]["occupancy_count"] == 3
         assert command["input_snapshot"]["environment_fresh"] is True
     assert stored["qualifying_since"] == NOW - timedelta(seconds=31)
+
+
+@pytest.mark.parametrize("report_age", [timedelta(seconds=1), timedelta(seconds=16)])
+async def test_only_fresh_firmware_ownership_suppresses_backend_auto(
+    monkeypatch: pytest.MonkeyPatch, report_age: timedelta
+) -> None:
+    queued, persist, _ = await _evaluate(
+        monkeypatch,
+        state=_state(qualifying_since=NOW - timedelta(seconds=31)),
+        devices=[
+            _device(
+                "fan",
+                reported_state={"on": False, "mode": "auto", "automation_owner": "firmware"},
+                reported_at=NOW - report_age,
+            ),
+            _device("lighting"),
+            _device("air_conditioner"),
+        ],
+    )
+
+    assert queued == (0 if report_age == timedelta(seconds=1) else 3)
+    assert persist.await_count == queued
+
+
+async def test_urgency_reassertion_carries_original_firmware_lease_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deadline = NOW + timedelta(minutes=4, microseconds=500)
+    queued, persist, _ = await _evaluate(
+        monkeypatch,
+        state=_state(urgency_started_at=NOW - timedelta(minutes=1), urgency_until=deadline),
+        devices=[
+            _device(
+                name,
+                reported_state={"on": False, "mode": "auto", "automation_owner": "firmware"},
+            )
+            for name in automation.DEVICE_NAMES
+        ],
+    )
+
+    assert queued == 3
+    for call in persist.await_args_list:
+        assert call.kwargs["requested_value"] == {
+            "on": True,
+            "mode": "auto",
+            "source": "urgency",
+            "urgency_until": "2026-10-26T08:04:00Z",
+        }
+
+
+@pytest.mark.parametrize(
+    ("lux", "ldr", "light_on"),
+    [(299, None, True), (300, None, False), (299, 500, False), (None, None, False)],
+)
+async def test_calibrated_lighting_and_partial_temperature_in_backend_auto(
+    monkeypatch: pytest.MonkeyPatch, lux: float | None, ldr: int | None, light_on: bool
+) -> None:
+    _, persist, _ = await _evaluate(
+        monkeypatch,
+        state=_state(qualifying_since=NOW - timedelta(seconds=31)),
+        temperature=None,
+        humidity=66.0,
+        ldr=ldr,
+        lux=lux,
+    )
+    commands = {call.kwargs["device_id"]: call.kwargs for call in persist.await_args_list}
+    assert (automation.LIGHT_DEVICE_ID in commands) is light_on
+    assert commands[automation.AC_DEVICE_ID]["input_snapshot"]["temperature_c"] is None
 
 
 @pytest.mark.parametrize(

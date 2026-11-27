@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import FastAPI, Request
@@ -18,9 +19,11 @@ from app.api.v1.routers.analytics import router as analytics_router
 from app.api.v1.routers.camera import router as camera_router
 from app.api.v1.routers.device_control import router as device_control_router
 from app.api.v1.routers.environment_analysis import router as environment_analysis_router
+from app.api.v1.routers.prototype_monitor import router as prototype_monitor_router
 from app.core.config import Settings
 from app.core.db import create_database
 from app.core.private_bridge import PrivateBridgeMiddleware
+from app.domain.local_hardware import LOCAL_RELAY_DEVICE_IDS
 from app.integrations.mqtt.dispatcher import MqttCommandDispatcher
 from app.integrations.mqtt.ingestion import EnvironmentEnvelope, MqttIngestion
 from app.repositories.device_control import (
@@ -35,6 +38,7 @@ from app.repositories.device_control import (
 from app.repositories.environment import insert_environment_reading
 from app.repositories.occupancy import insert_occupancy_observation
 from app.repositories.runtime_history import store_runtime_observation
+from app.repositories.solar_monitor import insert_solar_message, record_relay_receipt
 from app.schemas.mqtt import (
     AvailabilityPayload,
     CommandAcknowledgementPayload,
@@ -42,6 +46,7 @@ from app.schemas.mqtt import (
     MqttEnvelope,
     OccupancyObservationPayload,
 )
+from app.schemas.solar_monitor import SolarStatusEnvelope, SolarTelemetryEnvelope
 from app.services.camera_preview import CameraPreview
 from app.services.energy_chat import EnergyChat
 from app.services.environmental_analyst import EnvironmentalAnalyst
@@ -110,6 +115,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _topic_device_id: UUID,
         retained: bool,
     ) -> None:
+        received_at = datetime.now(UTC)
         async with sessions() as session:
             await store_device_state(
                 session,
@@ -126,6 +132,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _store_runtime_observation_safely(
             sessions, envelope, retained, settings.analytics_stale_after_seconds
         )
+        if not retained and envelope.payload.device_id in LOCAL_RELAY_DEVICE_IDS:
+            try:
+                async with sessions() as session:
+                    await record_relay_receipt(
+                        session, envelope.classroom_id, envelope.occurred_at, received_at
+                    )
+            except SQLAlchemyError as exc:
+                # A missing monitoring migration cannot undo relay state or runtime history.
+                logger.debug("Relay monitoring receipt not recorded (%s)", type(exc).__name__)
 
     async def persist_gateway_availability(
         envelope: MqttEnvelope[AvailabilityPayload],
@@ -152,6 +167,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 payload=envelope.payload,
             )
 
+    async def persist_solar(
+        envelope: SolarTelemetryEnvelope | SolarStatusEnvelope,
+        received_at: datetime,
+    ) -> bool:
+        async with sessions() as session:
+            return await insert_solar_message(session, envelope, received_at)
+
     mqtt_ingestion = MqttIngestion(
         host=settings.mqtt_host,
         port=settings.mqtt_port,
@@ -165,6 +187,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         persist_device_state=persist_device_state,
         persist_gateway_availability=persist_gateway_availability,
         persist_acknowledgement=persist_acknowledgement,
+        solar_identity=(
+            settings.solar_site_id,
+            settings.solar_classroom_id,
+            settings.solar_producer_id,
+        ),
+        persist_solar_telemetry=persist_solar,
+        persist_solar_status=persist_solar,
     )
     command_dispatcher = MqttCommandDispatcher(
         host=settings.mqtt_host,
@@ -229,6 +258,7 @@ app.include_router(environment_analysis_router)
 app.include_router(device_control_router)
 app.include_router(analytics_router)
 app.include_router(camera_router)
+app.include_router(prototype_monitor_router)
 
 
 @app.get("/health/live")

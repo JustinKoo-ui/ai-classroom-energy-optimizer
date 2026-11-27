@@ -1,4 +1,4 @@
-"""Paho MQTT environment telemetry consumer."""
+"""Paho MQTT telemetry and device state consumer."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from uuid import UUID
 import paho.mqtt.client as mqtt
 from pydantic import TypeAdapter, ValidationError
 
+from app.schemas.classroom_telemetry import ClassroomTelemetryEnvelope
 from app.schemas.mqtt import (
     AvailabilityPayload,
     CommandAcknowledgementPayload,
@@ -24,6 +25,7 @@ from app.schemas.mqtt import (
     MqttEnvelopeV2,
     OccupancyObservationPayload,
 )
+from app.schemas.solar_monitor import SolarEnvelope, SolarStatusEnvelope, SolarTelemetryEnvelope
 
 logger = logging.getLogger(__name__)
 EnvelopeAdapter = TypeAdapter(MqttEnvelope[EnvironmentTelemetryPayload])
@@ -33,13 +35,18 @@ DeviceStateAdapter = TypeAdapter(MqttEnvelope[DeviceStatePayload])
 AvailabilityAdapter = TypeAdapter(MqttEnvelope[AvailabilityPayload])
 AcknowledgementAdapter = TypeAdapter(MqttEnvelope[CommandAcknowledgementPayload])
 EnvironmentEnvelope = (
-    MqttEnvelope[EnvironmentTelemetryPayload] | MqttEnvelopeV2[EnvironmentTelemetryPayloadV2]
+    MqttEnvelope[EnvironmentTelemetryPayload]
+    | MqttEnvelopeV2[EnvironmentTelemetryPayloadV2]
+    | ClassroomTelemetryEnvelope
 )
 Persist = Callable[[EnvironmentEnvelope], Awaitable[bool]]
 PersistOccupancyObservation = Callable[[MqttEnvelope[OccupancyObservationPayload]], Awaitable[bool]]
 PersistDeviceState = Callable[[MqttEnvelope[DeviceStatePayload], UUID, bool], Awaitable[None]]
 PersistGatewayAvailability = Callable[[MqttEnvelope[AvailabilityPayload]], Awaitable[None]]
 PersistAcknowledgement = Callable[[MqttEnvelope[CommandAcknowledgementPayload]], Awaitable[None]]
+PersistSolarTelemetry = Callable[[SolarTelemetryEnvelope, datetime], Awaitable[bool]]
+PersistSolarStatus = Callable[[SolarStatusEnvelope, datetime], Awaitable[bool]]
+MAX_SOLAR_MESSAGE_BYTES = 2048
 
 
 class MqttIngestion:
@@ -60,6 +67,9 @@ class MqttIngestion:
         persist_device_state: PersistDeviceState | None = None,
         persist_gateway_availability: PersistGatewayAvailability | None = None,
         persist_acknowledgement: PersistAcknowledgement | None = None,
+        solar_identity: tuple[UUID, UUID, str] | None = None,
+        persist_solar_telemetry: PersistSolarTelemetry | None = None,
+        persist_solar_status: PersistSolarStatus | None = None,
     ) -> None:
         root = topic_root.rstrip("/")
         self.topics = [
@@ -76,7 +86,16 @@ class MqttIngestion:
         self._persist_device_state = persist_device_state
         self._persist_gateway_availability = persist_gateway_availability
         self._persist_acknowledgement = persist_acknowledgement
+        self._solar_identity = solar_identity
+        self._solar_topic: str | None = None
+        if solar_identity is not None:
+            site_id, classroom_id, producer_id = solar_identity
+            self._solar_topic = f"{root}/{site_id}/{classroom_id}/solar/{producer_id}"
+            self.topics.extend([f"{self._solar_topic}/telemetry", f"{self._solar_topic}/status"])
+        self._persist_solar_telemetry = persist_solar_telemetry
+        self._persist_solar_status = persist_solar_status
         self.connected = False
+        self.connected_at: datetime | None = None
         self._stopping = False
         self._client = mqtt.Client(
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,  # type: ignore[attr-defined]
@@ -134,6 +153,7 @@ class MqttIngestion:
         if getattr(reason_code, "is_failure", False):
             logger.error("MQTT connection rejected: %s", reason_code)
             return
+        self.connected_at = datetime.now(UTC)
         self.connected = True
         logger.info("MQTT connected; subscribing to %d topics", len(self.topics))
         for topic in self.topics:
@@ -185,6 +205,9 @@ class MqttIngestion:
 
     async def _handle_message(self, message: mqtt.MQTTMessage) -> None:
         try:
+            if self._solar_topic is not None and message.topic.startswith(f"{self._solar_topic}/"):
+                await self._handle_solar_message(message, datetime.now(UTC))
+                return
             payload = json.loads(message.payload.decode("utf-8"))
             parts = message.topic.split("/")
             if len(parts) < 4 or parts[: len(self._topic_root)] != self._topic_root:
@@ -193,10 +216,14 @@ class MqttIngestion:
                 schema_version = (
                     payload.get("schema_version") if isinstance(payload, dict) else None
                 )
-                if isinstance(schema_version, str) and schema_version.startswith("2."):
-                    environment_envelope: EnvironmentEnvelope = EnvelopeV2Adapter.validate_python(
-                        payload
+                if schema_version == "3.0":
+                    if message.retain:
+                        raise ValueError("classroom telemetry must not be retained")
+                    environment_envelope: EnvironmentEnvelope = (
+                        ClassroomTelemetryEnvelope.model_validate(payload)
                     )
+                elif isinstance(schema_version, str) and schema_version.startswith("2."):
+                    environment_envelope = EnvelopeV2Adapter.validate_python(payload)
                 else:
                     environment_envelope = EnvelopeAdapter.validate_python(payload)
                 self._validate_topic_identity(environment_envelope, parts)
@@ -246,6 +273,13 @@ class MqttIngestion:
                     raise ValueError("command acknowledgement identity or delivery mode is invalid")
                 await self._persist_acknowledgement(acknowledgement_envelope)
             elif len(parts) == 7 and parts[4] == "gateway" and parts[6] == "status":
+                if (
+                    isinstance(payload, dict)
+                    and "occurred_at" in payload
+                    and payload["occurred_at"] is None
+                ):
+                    # A Will's publication time is unknown when the ESP32 connects.
+                    payload["occurred_at"] = datetime.now(UTC)
                 availability_envelope = AvailabilityAdapter.validate_python(payload)
                 self._validate_topic_identity(availability_envelope, parts)
                 if (
@@ -261,6 +295,38 @@ class MqttIngestion:
         except Exception:
             logger.exception("Failed to process MQTT message topic=%s", message.topic)
 
+    async def _handle_solar_message(self, message: mqtt.MQTTMessage, received_at: datetime) -> None:
+        if len(message.payload) > MAX_SOLAR_MESSAGE_BYTES:
+            raise ValueError("solar MQTT message exceeds the size limit")
+
+        if message.topic == f"{self._solar_topic}/telemetry":
+            if message.retain or self._persist_solar_telemetry is None:
+                raise ValueError("solar telemetry delivery mode or handler is invalid")
+            reading = SolarTelemetryEnvelope.model_validate_json(message.payload)
+            self._validate_solar_identity(reading, received_at)
+            await self._persist_solar_telemetry(reading, received_at)
+            return
+
+        if (
+            message.topic == f"{self._solar_topic}/status"
+            and self._persist_solar_status is not None
+        ):
+            availability = SolarStatusEnvelope.model_validate_json(message.payload)
+            self._validate_solar_identity(availability, received_at)
+            await self._persist_solar_status(availability, received_at)
+            return
+
+        raise ValueError("unexpected solar MQTT topic or missing handler")
+
+    def _validate_solar_identity(self, envelope: SolarEnvelope, received_at: datetime) -> None:
+        if (envelope.site_id, envelope.classroom_id, envelope.producer_id) != self._solar_identity:
+            raise ValueError("solar MQTT envelope does not match the registered topic identity")
+        if (
+            envelope.occurred_at is not None
+            and envelope.occurred_at > received_at + timedelta(seconds=30)
+        ):
+            raise ValueError("solar MQTT timestamp is too far in the future")
+
     def _validate_topic_identity(self, envelope: Any, parts: list[str]) -> None:
         offset = len(self._topic_root)
         if (
@@ -269,7 +335,10 @@ class MqttIngestion:
             or str(envelope.classroom_id) != parts[offset + 1]
         ):
             raise ValueError("topic identity does not match envelope")
-        if envelope.occurred_at > datetime.now(UTC) + timedelta(seconds=30):
+        if (
+            envelope.occurred_at is not None
+            and envelope.occurred_at > datetime.now(UTC) + timedelta(seconds=30)
+        ):
             raise ValueError("MQTT timestamp is too far in the future")
 
     @staticmethod

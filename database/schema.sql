@@ -156,8 +156,8 @@ CREATE TABLE environment_readings (
     message_id uuid NOT NULL UNIQUE,
     classroom_id uuid NOT NULL REFERENCES classrooms(id) ON DELETE RESTRICT,
     sensor_id text NOT NULL,
-    temperature_c numeric(6, 3) NOT NULL CHECK (temperature_c BETWEEN -20 AND 80),
-    relative_humidity_pct numeric(6, 3) NOT NULL CHECK (relative_humidity_pct BETWEEN 0 AND 100),
+    temperature_c numeric(6, 3),
+    relative_humidity_pct numeric(6, 3) CHECK (relative_humidity_pct BETWEEN 0 AND 100),
     illuminance_lux numeric(12, 3) CHECK (illuminance_lux BETWEEN 0 AND 200000),
     illuminance_adc integer CHECK (illuminance_adc IS NULL OR illuminance_adc BETWEEN 0 AND 4095),
     motion_detected boolean,
@@ -165,13 +165,29 @@ CREATE TABLE environment_readings (
     quality jsonb NOT NULL DEFAULT '{}'::jsonb,
     occurred_at timestamptz NOT NULL,
     received_at timestamptz NOT NULL DEFAULT now(),
+    device_occurred_at timestamptz,
+    classroom_telemetry jsonb,
     CHECK (jsonb_typeof(quality) = 'object'),
-    CONSTRAINT ck_environment_readings_light_value
-        CHECK (illuminance_lux IS NOT NULL OR illuminance_adc IS NOT NULL)
+    CONSTRAINT environment_readings_temperature_c_check CHECK (
+        temperature_c BETWEEN CASE WHEN classroom_telemetry IS NULL THEN -20 ELSE -40 END AND 80
+    ),
+    CONSTRAINT ck_environment_readings_classroom_telemetry CHECK (
+        classroom_telemetry IS NOT NULL AND jsonb_typeof(classroom_telemetry) = 'object'
+        OR classroom_telemetry IS NULL AND device_occurred_at IS NULL
+           AND temperature_c IS NOT NULL AND relative_humidity_pct IS NOT NULL
+    ),
+    CONSTRAINT ck_environment_readings_light_value CHECK (
+        classroom_telemetry IS NOT NULL OR illuminance_lux IS NOT NULL
+        OR illuminance_adc IS NOT NULL
+    )
 );
 
 CREATE INDEX ix_environment_readings_classroom_time
     ON environment_readings (classroom_id, occurred_at DESC);
+
+CREATE INDEX ix_environment_readings_classroom_telemetry_time ON environment_readings (
+    classroom_id, sensor_id, occurred_at DESC, received_at DESC, message_id DESC
+) WHERE classroom_telemetry IS NOT NULL;
 
 CREATE TABLE environment_latest (
     classroom_id uuid PRIMARY KEY REFERENCES classrooms(id) ON DELETE CASCADE,
@@ -691,5 +707,30 @@ CREATE INDEX ix_analytics_runtime_device_time
     ON analytics_runtime_segments (device_id, last_observed_at DESC);
 CREATE INDEX ix_analytics_runtime_classroom_time
     ON analytics_runtime_segments (classroom_id, first_observed_at, last_observed_at);
+
+CREATE TABLE solar_tracker_messages (
+    message_id uuid PRIMARY KEY,
+    site_id uuid NOT NULL REFERENCES sites(id) ON DELETE RESTRICT,
+    classroom_id uuid NOT NULL REFERENCES classrooms(id) ON DELETE RESTRICT,
+    producer_id text NOT NULL CHECK (producer_id ~ '^[A-Za-z0-9_-]{1,80}$'),
+    message_kind text NOT NULL CHECK (message_kind IN ('telemetry', 'status')),
+    occurred_at timestamptz,
+    received_at timestamptz NOT NULL,
+    payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object')
+);
+
+CREATE INDEX ix_solar_tracker_messages_source_time
+    ON solar_tracker_messages (
+        site_id, classroom_id, producer_id, message_kind, received_at DESC, message_id DESC
+    );
+
+CREATE INDEX ix_environment_readings_sensor_receipt
+    ON environment_readings (classroom_id, sensor_id, received_at DESC);
+
+CREATE TABLE relay_monitor_receipts (
+    classroom_id uuid PRIMARY KEY REFERENCES classrooms(id) ON DELETE CASCADE,
+    occurred_at timestamptz NOT NULL,
+    received_at timestamptz NOT NULL
+);
 
 COMMIT;

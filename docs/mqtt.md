@@ -1,4 +1,4 @@
-# MQTT Contracts v1 and v2
+# MQTT Contracts
 
 Topic root: `aceo/v1/{site_id}/{classroom_id}`
 
@@ -27,6 +27,8 @@ For local ESP32 connection and changing LAN-address checks, see the
 | `command/{device_id}/set` | backend dispatcher only | named device | 1 | no |
 | `command/{device_id}/ack` | named device | backend | 1 | no |
 | `gateway/{gateway_id}/status` | gateway | backend | 1 | yes |
+| `solar/{producer_id}/telemetry` | solar tracker | backend | 1 | no |
+| `solar/{producer_id}/status` | solar tracker or its LWT | backend | 1 | yes |
 
 Commands and acknowledgements must never be retained. QoS 1 means duplicates
 are valid; consumers deduplicate `message_id`, and firmware deduplicates
@@ -51,6 +53,9 @@ Every payload is UTF-8 JSON:
 Consumers reject unsupported major versions, malformed UUID/timestamps, topic
 and payload identity mismatches, timestamps too far in the future and payloads
 outside physical bounds. Rejected payloads cannot update authoritative state.
+Solar, classroom schema `3.0`, and gateway status messages can carry a null
+`occurred_at` when device wall time is unavailable. A gateway Last Will
+also uses a null timestamp because the broker publishes it on disconnection.
 Schema `1.0` remains supported for calibrated lux senders. New LM393 sensor
 gateways use environment payload schema `2.0` and report raw ADC counts instead
 of claiming an uncalibrated lux value.
@@ -105,6 +110,138 @@ signal describes motion detection only; it is not an occupant count or proof
 that the room is vacant. It is `null` during the PIR module's 30-second startup
 period. Both v1 and v2 observations are persisted in
 `environment_readings`; lux is nullable for v2 readings.
+
+### Classroom environment telemetry schema 3.0
+
+The classroom ESP32 publishes one non-retained QoS 1 snapshot to
+`.../telemetry/environment`. It uses its existing broker identity and ACL.
+
+```json
+{
+  "schema_version": "3.0",
+  "message_id": "398060ac-3df1-4bea-a9db-6c06216d110a",
+  "occurred_at": "2026-11-26T04:00:00Z",
+  "site_id": "c7ef6d75-7c12-461a-bb49-73f917c3357d",
+  "classroom_id": "26e97d46-7a34-4439-922a-83684bda557d",
+  "producer_id": "esp32-room-a204",
+  "payload": {
+    "sensor_id": "esp32-room-a204",
+    "boot_id": "ac2d2196-95aa-4651-9780-84aca75b4d6e",
+    "uptime_ms": 120000,
+    "sample_interval_ms": 2000,
+    "temperature_c": 27.5,
+    "relative_humidity_pct": 68.0,
+    "illuminance_lux": 250.0,
+    "motion_detected": true,
+    "voltage_v": 12.1,
+    "current_a": 0.85,
+    "active_power_w": 10.285,
+    "energy_wh_total": 125.5,
+    "energy_kwh_total": 0.1255,
+    "relays": {"light": true, "fan": true, "air_conditioner": true},
+    "sensors": {
+      "dht22_available": true,
+      "pir_ready": true,
+      "bh1750_available": true,
+      "bh1750_fresh": true,
+      "bh1750_age_ms": 0,
+      "ina219_available": true
+    },
+    "energy_storage_available": true
+  }
+}
+```
+
+`occurred_at` is null until the ESP32 can supply a network-synchronized UTC
+timestamp. FastAPI retains its receipt time. Missing measurements are null.
+An older lux value can be present with `bh1750_fresh: false` and its age.
+Motion is null during PIR warm-up. The INA219 supplies signed current and
+`active_power_w` (voltage × current) for its measured DC circuit. Positive
+consumption accumulates from valid samples on the ESP32. The cumulative meter
+can remain available during INA219 failures. The relay booleans represent
+output commands.
+
+FastAPI stores one validated row per `message_id` and delivers the snapshot
+and its measured DC history through the
+[prototype monitor](api/rest.md#classroom-prototype-monitor).
+
+## Solar tracker telemetry
+
+Topic `.../solar/solar-tracker-esp32/telemetry`. The example uses a manual test
+sample with GPS disabled. Each actual message uses a new `message_id`.
+
+```json
+{
+  "schema_version": "1.0",
+  "message_id": "22ee6fe6-e6f0-474e-bcdd-b708b0d73b48",
+  "occurred_at": null,
+  "site_id": "c7ef6d75-7c12-461a-bb49-73f917c3357d",
+  "classroom_id": "26e97d46-7a34-4439-922a-83684bda557d",
+  "producer_id": "solar-tracker-esp32",
+  "payload": {
+    "boot_id": "45bf0c0d-0af4-47cb-be51-f6954556e8f6",
+    "gps": {
+      "enabled": false,
+      "fix": false,
+      "time_valid": false,
+      "latitude": null,
+      "longitude": null,
+      "last_fix_age_ms": null
+    },
+    "tracking": {
+      "mode": "manual",
+      "target_azimuth": 120.5,
+      "actual_azimuth": 119.8,
+      "target_zenith": 40.2,
+      "actual_zenith": 39.9,
+      "azimuth_pwm": 0,
+      "zenith_pwm": 0,
+      "stop_reason": null
+    },
+    "solar_power": {
+      "voltage": 12.5,
+      "current": 1.25,
+      "power": 15.625,
+      "energy": 5.5
+    },
+    "sensors": {
+      "ina219_available": true,
+      "azimuth_mpu_available": true,
+      "zenith_mpu_available": true
+    }
+  }
+}
+```
+
+Angles and coordinates are in degrees. PWM values describe commanded 8-bit
+duty. Global stop reasons are `waiting_for_gps`, `waiting_for_clock`, `spa_error`,
+`feedback_unavailable`, `zenith_limit`, and `local_hold`. Electrical units are V, A, W, and
+Wh. A null number means there was no valid reading for that field. When `gps.enabled`
+is false, the fix and time flags are false and the remaining GPS fields are null.
+Older messages without `enabled` are treated as GPS enabled. The Wh
+counter is local to the boot or the last `RESET_WH` command. The backend stores
+each accepted sample once by message ID and records its own UTC receipt time.
+
+`tracking.yaw_sequence` is optional. When a Serial `TEST` or `RUN` has started,
+it reports `kind`, `phase`, `leg_progress_deg`, `leg_target_deg`,
+`net_rotation_deg`, and `result`. The phase is `clockwise`, `pause`,
+`anticlockwise`, or `idle`. The result is null during motion and describes the
+completion or stop afterward. The sequence reports relative travel with
+clockwise positive. It has no absolute tracking target or browser command.
+
+`tracking.fixed_yaw` is optional and appears in fixed-tilt mode. It reports
+`clock_set`, `referenced`, `calibrating`, `armed`, `reachable`, `status`,
+`demo_speed`, and `solar_time`. `solar_time` is the timezone-aware time used to
+calculate the sun’s position and can be accelerated in a Serial demo. MQTT
+`occurred_at` and the backend receipt time continue to describe actual sample
+timing. A fixed-tilt sample can report a calculated target zenith and an
+available tilt measurement while `zenith_pwm` remains zero.
+
+Topic `.../solar/solar-tracker-esp32/status` uses the same envelope with a payload
+of `{"boot_id":"45bf0c0d-0af4-47cb-be51-f6954556e8f6","status":"online"}`.
+A Last Will uses status `offline` and a null `occurred_at`, since the Will is
+prepared at connect time. Availability and sample freshness are tracked separately.
+The solar account has no relay command permissions.
 
 ## Power telemetry
 
@@ -294,16 +431,20 @@ an unbounded queue of old samples. Intermediate periodic snapshots may be
 skipped; command acknowledgements and immediate state reports are not gated.
 Broker acknowledgement is transport confirmation, not evidence that a device
 command was applied. Freshness still uses the original observation timestamp.
-The backend deterministic policy combines camera observations and fresh
-sensor telemetry and writes approved commands to the transactional outbox.
-Firmware only validates and applies these commands; PIR telemetry never
-directly overrides an output or blocks a manual command.
+Current firmware evaluates the classroom PIR, lux, temperature and humidity
+rules locally in Auto. Its per-device reported state includes
+`automation_owner: "firmware"`. The backend defers ordinary Auto commands
+for those devices. Existing dispatcher commands still carry approved Manual,
+mode and Urgency decisions. Gateways without the marker use the legacy
+backend automation policy.
 
 This firmware supports only `set_power` and `set_mode`; it rejects
 `set_temperature`, `set_fan_speed`, and `set_brightness`. For this local relay
 adapter, a manual `set_power` value includes `{"on": true, "mode":
 "manual", "source": "manual"}`. An automatic value uses `mode: "auto"` and a
 policy source. Per-device Manual mode is preserved across urgency operation.
-The frontend uses REST polling; it never connects to the broker. See
+For firmware-owned relays an approved Urgency command can include
+`value.urgency_until` with a UTC deadline formatted as `YYYY-MM-DDTHH:MM:SSZ`.
+The frontend uses backend REST and server-sent events. See
 [`firmware/esp32/README.md`](../firmware/esp32/README.md) for the local setup
 and low-voltage limitations.

@@ -13,6 +13,8 @@ import paho.mqtt.client as mqtt
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.schemas.mqtt import format_mqtt_timestamp
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,7 +188,7 @@ class MqttCommandDispatcher:
         envelope = {
             "schema_version": "1.0",
             "message_id": str(uuid4()),
-            "occurred_at": _format_utc(datetime.now(UTC)),
+            "occurred_at": format_mqtt_timestamp(datetime.now(UTC)),
             "site_id": str(command["site_id"]),
             "classroom_id": str(command["classroom_id"]),
             "producer_id": self._producer_id,
@@ -196,7 +198,7 @@ class MqttCommandDispatcher:
                 "device_id": str(command["device_id"]),
                 "action": command["action"],
                 "value": command["value"],
-                "expires_at": _format_utc(command["expires_at"]),
+                "expires_at": format_mqtt_timestamp(command["expires_at"]),
                 "idempotency_key": command["idempotency_key"],
             },
         }
@@ -262,7 +264,3 @@ class MqttCommandDispatcher:
         self.connected = False
         if not self._stopping:
             logger.warning("MQTT command dispatcher disconnected: %s; reconnecting", reason_code)
-
-
-def _format_utc(value: datetime) -> str:
-    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
