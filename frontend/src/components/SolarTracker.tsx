@@ -1,5 +1,6 @@
 "use client";
 
+import { SolarDigitalTwin } from "@/src/components/SolarDigitalTwin";
 import { TelemetryHistoryChart, type HistoryChartDefinition } from "@/src/components/TelemetryHistoryChart";
 import { SOLAR_ENERGY_PRECISION, solarCollectedWh, solarTelemetryIsFresh } from "@/src/lib/prototype-energy";
 import type { ReactNode } from "react";
@@ -310,6 +311,8 @@ export function SolarTracker({ snapshot, history, error }: Feed) {
           {charts.map((definition) => <TelemetryHistoryChart key={definition.title} definition={definition} history={history} />)}
         </div>
       </section>
+
+      <SolarDigitalTwin snapshot={snapshot} error={error} />
 
       <PrototypeStatus snapshot={snapshot} error={error} />
     </>
